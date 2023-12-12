@@ -18,6 +18,7 @@ import ShareController
 import WebPBinding
 import ReactionImageComponent
 import FeaturedStickersScreen
+import QuickReactionSetupController
 
 private final class InstalledStickerPacksControllerArguments {
     let context: AccountContext
@@ -732,7 +733,14 @@ public func installedStickerPacksController(context: AccountContext, mode: Insta
         ])
         presentControllerImpl?(controller, ViewControllerPresentationArguments(presentationAnimation: .modalSheet))
     }, openStickersBot: {
-        resolveDisposable.set((context.engine.peers.resolvePeerByName(name: "stickers") |> deliverOnMainQueue).start(next: { peer in
+        resolveDisposable.set((context.engine.peers.resolvePeerByName(name: "stickers")
+        |> mapToSignal { result -> Signal<EnginePeer?, NoError> in
+            guard case let .result(result) = result else {
+                return .complete()
+            }
+            return .single(result)
+        }
+        |> deliverOnMainQueue).start(next: { peer in
             if let peer = peer {
                 navigateToChatControllerImpl?(peer.id)
             }

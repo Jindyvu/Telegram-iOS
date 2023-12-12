@@ -72,22 +72,22 @@ public extension Api {
 }
 public extension Api {
     enum AttachMenuBot: TypeConstructorDescription {
-        case attachMenuBot(flags: Int32, botId: Int64, shortName: String, peerTypes: [Api.AttachMenuPeerType], icons: [Api.AttachMenuBotIcon])
+        case attachMenuBot(flags: Int32, botId: Int64, shortName: String, peerTypes: [Api.AttachMenuPeerType]?, icons: [Api.AttachMenuBotIcon])
     
     public func serialize(_ buffer: Buffer, _ boxed: Swift.Bool) {
     switch self {
                 case .attachMenuBot(let flags, let botId, let shortName, let peerTypes, let icons):
                     if boxed {
-                        buffer.appendInt32(-928371502)
+                        buffer.appendInt32(-653423106)
                     }
                     serializeInt32(flags, buffer: buffer, boxed: false)
                     serializeInt64(botId, buffer: buffer, boxed: false)
                     serializeString(shortName, buffer: buffer, boxed: false)
-                    buffer.appendInt32(481674261)
-                    buffer.appendInt32(Int32(peerTypes.count))
-                    for item in peerTypes {
+                    if Int(flags) & Int(1 << 3) != 0 {buffer.appendInt32(481674261)
+                    buffer.appendInt32(Int32(peerTypes!.count))
+                    for item in peerTypes! {
                         item.serialize(buffer, true)
-                    }
+                    }}
                     buffer.appendInt32(481674261)
                     buffer.appendInt32(Int32(icons.count))
                     for item in icons {
@@ -112,9 +112,9 @@ public extension Api {
             var _3: String?
             _3 = parseString(reader)
             var _4: [Api.AttachMenuPeerType]?
-            if let _ = reader.readInt32() {
+            if Int(_1!) & Int(1 << 3) != 0 {if let _ = reader.readInt32() {
                 _4 = Api.parseVector(reader, elementSignature: 0, elementType: Api.AttachMenuPeerType.self)
-            }
+            } }
             var _5: [Api.AttachMenuBotIcon]?
             if let _ = reader.readInt32() {
                 _5 = Api.parseVector(reader, elementSignature: 0, elementType: Api.AttachMenuBotIcon.self)
@@ -122,10 +122,10 @@ public extension Api {
             let _c1 = _1 != nil
             let _c2 = _2 != nil
             let _c3 = _3 != nil
-            let _c4 = _4 != nil
+            let _c4 = (Int(_1!) & Int(1 << 3) == 0) || _4 != nil
             let _c5 = _5 != nil
             if _c1 && _c2 && _c3 && _c4 && _c5 {
-                return Api.AttachMenuBot.attachMenuBot(flags: _1!, botId: _2!, shortName: _3!, peerTypes: _4!, icons: _5!)
+                return Api.AttachMenuBot.attachMenuBot(flags: _1!, botId: _2!, shortName: _3!, peerTypes: _4, icons: _5!)
             }
             else {
                 return nil
@@ -888,6 +888,70 @@ public extension Api {
         }
         public static func parse_boolTrue(_ reader: BufferReader) -> Bool? {
             return Api.Bool.boolTrue
+        }
+    
+    }
+}
+public extension Api {
+    enum Boost: TypeConstructorDescription {
+        case boost(flags: Int32, id: String, userId: Int64?, giveawayMsgId: Int32?, date: Int32, expires: Int32, usedGiftSlug: String?, multiplier: Int32?)
+    
+    public func serialize(_ buffer: Buffer, _ boxed: Swift.Bool) {
+    switch self {
+                case .boost(let flags, let id, let userId, let giveawayMsgId, let date, let expires, let usedGiftSlug, let multiplier):
+                    if boxed {
+                        buffer.appendInt32(706514033)
+                    }
+                    serializeInt32(flags, buffer: buffer, boxed: false)
+                    serializeString(id, buffer: buffer, boxed: false)
+                    if Int(flags) & Int(1 << 0) != 0 {serializeInt64(userId!, buffer: buffer, boxed: false)}
+                    if Int(flags) & Int(1 << 2) != 0 {serializeInt32(giveawayMsgId!, buffer: buffer, boxed: false)}
+                    serializeInt32(date, buffer: buffer, boxed: false)
+                    serializeInt32(expires, buffer: buffer, boxed: false)
+                    if Int(flags) & Int(1 << 4) != 0 {serializeString(usedGiftSlug!, buffer: buffer, boxed: false)}
+                    if Int(flags) & Int(1 << 5) != 0 {serializeInt32(multiplier!, buffer: buffer, boxed: false)}
+                    break
+    }
+    }
+    
+    public func descriptionFields() -> (String, [(String, Any)]) {
+        switch self {
+                case .boost(let flags, let id, let userId, let giveawayMsgId, let date, let expires, let usedGiftSlug, let multiplier):
+                return ("boost", [("flags", flags as Any), ("id", id as Any), ("userId", userId as Any), ("giveawayMsgId", giveawayMsgId as Any), ("date", date as Any), ("expires", expires as Any), ("usedGiftSlug", usedGiftSlug as Any), ("multiplier", multiplier as Any)])
+    }
+    }
+    
+        public static func parse_boost(_ reader: BufferReader) -> Boost? {
+            var _1: Int32?
+            _1 = reader.readInt32()
+            var _2: String?
+            _2 = parseString(reader)
+            var _3: Int64?
+            if Int(_1!) & Int(1 << 0) != 0 {_3 = reader.readInt64() }
+            var _4: Int32?
+            if Int(_1!) & Int(1 << 2) != 0 {_4 = reader.readInt32() }
+            var _5: Int32?
+            _5 = reader.readInt32()
+            var _6: Int32?
+            _6 = reader.readInt32()
+            var _7: String?
+            if Int(_1!) & Int(1 << 4) != 0 {_7 = parseString(reader) }
+            var _8: Int32?
+            if Int(_1!) & Int(1 << 5) != 0 {_8 = reader.readInt32() }
+            let _c1 = _1 != nil
+            let _c2 = _2 != nil
+            let _c3 = (Int(_1!) & Int(1 << 0) == 0) || _3 != nil
+            let _c4 = (Int(_1!) & Int(1 << 2) == 0) || _4 != nil
+            let _c5 = _5 != nil
+            let _c6 = _6 != nil
+            let _c7 = (Int(_1!) & Int(1 << 4) == 0) || _7 != nil
+            let _c8 = (Int(_1!) & Int(1 << 5) == 0) || _8 != nil
+            if _c1 && _c2 && _c3 && _c4 && _c5 && _c6 && _c7 && _c8 {
+                return Api.Boost.boost(flags: _1!, id: _2!, userId: _3, giveawayMsgId: _4, date: _5!, expires: _6!, usedGiftSlug: _7, multiplier: _8)
+            }
+            else {
+                return nil
+            }
         }
     
     }

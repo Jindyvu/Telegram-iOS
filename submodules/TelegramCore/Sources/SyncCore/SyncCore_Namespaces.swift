@@ -79,6 +79,8 @@ public struct Namespaces {
         public static let CloudEmojiStatusCategories: Int32 = 22
         public static let CloudFeaturedProfilePhotoEmoji: Int32 = 23
         public static let CloudFeaturedGroupPhotoEmoji: Int32 = 24
+        public static let NewSessionReviews: Int32 = 25
+        public static let CloudFeaturedBackgroundIconEmoji: Int32 = 26
     }
     
     public struct CachedItemCollection {
@@ -108,6 +110,11 @@ public struct Namespaces {
         public static let cachedEmojiQueryResults: Int8 = 26
         public static let cachedPeerStoryListHeads: Int8 = 27
         public static let displayedStoryNotifications: Int8 = 28
+        public static let storySendAsPeerIds: Int8 = 29
+        public static let cachedChannelBoosts: Int8 = 31
+        public static let displayedMessageNotifications: Int8 = 32
+        public static let recommendedChannels: Int8 = 33
+        public static let peerColorOptions: Int8 = 34
     }
     
     public struct UnorderedItemList {
@@ -263,6 +270,7 @@ private enum PreferencesKeyValues: Int32 {
     case chatListFilterUpdates = 30
     case globalPrivacySettings = 31
     case storiesConfiguration = 32
+    case audioTranscriptionTrialState = 33
 }
 
 public func applicationSpecificPreferencesKey(_ value: Int32) -> ValueBoxKey {
@@ -425,6 +433,12 @@ public struct PreferencesKeys {
     public static let storiesConfiguration: ValueBoxKey = {
         let key = ValueBoxKey(length: 4)
         key.setInt32(0, value: PreferencesKeyValues.storiesConfiguration.rawValue)
+        return key
+    }()
+    
+    public static let audioTranscriptionTrialState: ValueBoxKey = {
+        let key = ValueBoxKey(length: 4)
+        key.setInt32(0, value: PreferencesKeyValues.audioTranscriptionTrialState.rawValue)
         return key
     }()
 }

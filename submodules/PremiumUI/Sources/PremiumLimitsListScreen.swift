@@ -53,6 +53,7 @@ public class PremiumLimitsListScreen: ViewController {
             if forceDark {
                 self.presentationData = self.presentationData.withUpdated(theme: defaultDarkPresentationTheme)
             }
+            self.presentationData = self.presentationData.withUpdated(theme: self.presentationData.theme.withModalBlocksBackground())
             
             self.controller = controller
             
@@ -71,7 +72,7 @@ public class PremiumLimitsListScreen: ViewController {
             super.init()
                         
             self.containerView.clipsToBounds = true
-            self.containerView.backgroundColor = self.presentationData.theme.list.plainBackgroundColor
+            self.containerView.backgroundColor = self.presentationData.theme.overallDarkAppearance ? self.presentationData.theme.list.blocksBackgroundColor : self.presentationData.theme.list.plainBackgroundColor
             
             self.addSubnode(self.dim)
             
@@ -667,7 +668,6 @@ public class PremiumLimitsListScreen: ViewController {
                         )
                     )
                 )
-                
                 availableItems[.animatedEmoji] = DemoPagerComponent.Item(
                     AnyComponentWithIdentity(
                         id: PremiumDemoScreen.Subject.animatedEmoji,
@@ -686,7 +686,6 @@ public class PremiumLimitsListScreen: ViewController {
                         )
                     )
                 )
-                
                 availableItems[.translation] = DemoPagerComponent.Item(
                     AnyComponentWithIdentity(
                         id: PremiumDemoScreen.Subject.translation,
@@ -701,6 +700,43 @@ public class PremiumLimitsListScreen: ViewController {
                                 )),
                                 title: strings.Premium_Translation,
                                 text: isStandalone ? strings.Premium_TranslationStandaloneInfo : strings.Premium_TranslationInfo,
+                                textColor: textColor
+                            )
+                        )
+                    )
+                )
+                availableItems[.colors] = DemoPagerComponent.Item(
+                    AnyComponentWithIdentity(
+                        id: PremiumDemoScreen.Subject.colors,
+                        component: AnyComponent(
+                            PageComponent(
+                                content: AnyComponent(PhoneDemoComponent(
+                                    context: context,
+                                    position: .top,
+                                    videoFile: configuration.videos["peer_colors"],
+                                    decoration: .badgeStars
+                                )),
+                                title: strings.Premium_Colors,
+                                text: strings.Premium_ColorsInfo,
+                                textColor: textColor
+                            )
+                        )
+                    )
+                )
+                availableItems[.wallpapers] = DemoPagerComponent.Item(
+                    AnyComponentWithIdentity(
+                        id: PremiumDemoScreen.Subject.wallpapers,
+                        component: AnyComponent(
+                            PageComponent(
+                                content: AnyComponent(PhoneDemoComponent(
+                                    context: context,
+                                    position: .top,
+                                    model: .island,
+                                    videoFile: configuration.videos["wallpapers"],
+                                    decoration: .swirlStars
+                                )),
+                                title: strings.Premium_Wallpapers,
+                                text: strings.Premium_WallpapersInfo,
                                 textColor: textColor
                             )
                         )
@@ -816,7 +852,7 @@ public class PremiumLimitsListScreen: ViewController {
                     additionalInset = 20.0
                 }
                 
-                return layout.size.height - layout.size.width - 178.0 - panelHeight + additionalInset
+                return layout.size.height - layout.size.width - 181.0 - panelHeight + additionalInset
             } else {
                 return 210.0
             }
@@ -1149,7 +1185,7 @@ private class FooterNode: ASDisplayNode {
         self.buttonNode.title = title
         
         self.coverNode = ASDisplayNode()
-        self.coverNode.backgroundColor = self.theme.list.plainBackgroundColor
+        self.coverNode.backgroundColor = self.theme.overallDarkAppearance ? self.theme.list.blocksBackgroundColor : self.theme.list.plainBackgroundColor
         
         self.pageIndicatorView = ComponentHostView<Empty>()
         self.pageIndicatorView.isUserInteractionEnabled = false

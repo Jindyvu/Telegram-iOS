@@ -13,6 +13,9 @@ import Pasteboard
 import ChatTextLinkEditUI
 import MobileCoreServices
 import ImageTransparency
+import ChatInputTextNode
+import TextInputMenu
+import ObjCRuntimeUtils
 
 public final class EmptyInputView: UIView, UIInputViewAudioFeedback {
     public var enableInputClicksWhenVisible: Bool {
@@ -90,6 +93,9 @@ public final class TextFieldComponent: Component {
     public let textColor: UIColor
     public let insets: UIEdgeInsets
     public let hideKeyboard: Bool
+    public let customInputView: UIView?
+    public let resetText: NSAttributedString?
+    public let isOneLineWhenUnfocused: Bool
     public let formatMenuAvailability: FormatMenuAvailability
     public let lockedFormatAction: () -> Void
     public let present: (ViewController) -> Void
@@ -103,6 +109,9 @@ public final class TextFieldComponent: Component {
         textColor: UIColor,
         insets: UIEdgeInsets,
         hideKeyboard: Bool,
+        customInputView: UIView?,
+        resetText: NSAttributedString?,
+        isOneLineWhenUnfocused: Bool,
         formatMenuAvailability: FormatMenuAvailability,
         lockedFormatAction: @escaping () -> Void,
         present: @escaping (ViewController) -> Void,
@@ -115,6 +124,9 @@ public final class TextFieldComponent: Component {
         self.textColor = textColor
         self.insets = insets
         self.hideKeyboard = hideKeyboard
+        self.customInputView = customInputView
+        self.resetText = resetText
+        self.isOneLineWhenUnfocused = isOneLineWhenUnfocused
         self.formatMenuAvailability = formatMenuAvailability
         self.lockedFormatAction = lockedFormatAction
         self.present = present
@@ -140,6 +152,15 @@ public final class TextFieldComponent: Component {
         if lhs.hideKeyboard != rhs.hideKeyboard {
             return false
         }
+        if lhs.customInputView !== rhs.customInputView {
+            return false
+        }
+        if lhs.resetText != rhs.resetText {
+            return false
+        }
+        if lhs.isOneLineWhenUnfocused != rhs.isOneLineWhenUnfocused {
+            return false
+        }
         if lhs.formatMenuAvailability != rhs.formatMenuAvailability {
             return false
         }
@@ -162,33 +183,16 @@ public final class TextFieldComponent: Component {
         }
     }
     
-    final class TextView: UITextView {
-        var onPaste: () -> Bool = { return true }
-        
-        override func paste(_ sender: Any?) {
-            if self.onPaste() {
-                super.paste(sender)
-            }
-        }
-        
-        override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-            if action == #selector(self.paste(_:)) {
-                return true
-            }
-            return super.canPerformAction(action, withSender: sender)
-        }
-    }
-    
-    public final class View: UIView, UITextViewDelegate, UIScrollViewDelegate {
-        private let textContainer: NSTextContainer
-        private let textStorage: NSTextStorage
-        private let layoutManager: NSLayoutManager
-        private let textView: TextView
+    public final class View: UIView, UIScrollViewDelegate, ChatInputTextNodeDelegate {
+        private let textView: ChatInputTextView
+        private let inputMenu: TextInputMenu
         
         private var spoilerView: InvisibleInkDustView?
         private var customEmojiContainerView: CustomEmojiContainerView?
         private var emojiViewProvider: ((ChatTextInputTextCustomEmojiAttribute) -> UIView)?
                 
+        private let ellipsisView = ComponentView<Empty>()
+        
         private var inputState: InputState {
             let selectionRange: Range<Int> = self.textView.selectedRange.location ..< (self.textView.selectedRange.location + self.textView.selectedRange.length)
             return InputState(inputText: stateAttributedStringForText(self.textView.attributedText ?? NSAttributedString()), selectionRange: selectionRange)
@@ -196,22 +200,10 @@ public final class TextFieldComponent: Component {
         
         private var component: TextFieldComponent?
         private weak var state: EmptyComponentState?
+        private var isUpdating: Bool = false
         
         override init(frame: CGRect) {
-            self.textContainer = NSTextContainer(size: CGSize())
-            self.textContainer.widthTracksTextView = false
-            self.textContainer.heightTracksTextView = false
-            self.textContainer.lineBreakMode = .byWordWrapping
-            self.textContainer.lineFragmentPadding = 8.0
-            
-            self.textStorage = NSTextStorage()
-
-            self.layoutManager = NSLayoutManager()
-            self.layoutManager.allowsNonContiguousLayout = false
-            self.layoutManager.addTextContainer(self.textContainer)
-            self.textStorage.addLayoutManager(self.layoutManager)
-            
-            self.textView = TextView(frame: CGRect(), textContainer: self.textContainer)
+            self.textView = ChatInputTextView(disableTiling: false)
             self.textView.translatesAutoresizingMaskIntoConstraints = false
             self.textView.backgroundColor = nil
             self.textView.layer.isOpaque = false
@@ -219,24 +211,23 @@ public final class TextFieldComponent: Component {
             self.textView.indicatorStyle = .white
             self.textView.scrollIndicatorInsets = UIEdgeInsets(top: 9.0, left: 0.0, bottom: 9.0, right: 0.0)
             
+            self.inputMenu = TextInputMenu(hasSpoilers: true, hasQuotes: true)
+            
             super.init(frame: frame)
             
             self.clipsToBounds = true
             
-            self.textView.delegate = self
+            self.textView.customDelegate = self
             self.addSubview(self.textView)
             
-            self.textContainer.widthTracksTextView = false
-            self.textContainer.heightTracksTextView = false
+            if #available(iOS 13.0, *) {
+                self.textView.overrideUserInterfaceStyle = .dark
+            }
             
             self.textView.typingAttributes = [
                 NSAttributedString.Key.font: Font.regular(17.0),
                 NSAttributedString.Key.foregroundColor: UIColor.white
             ]
-            
-            self.textView.onPaste = { [weak self] in
-                return self?.onPaste() ?? false
-            }
         }
         
         required init?(coder: NSCoder) {
@@ -250,19 +241,33 @@ public final class TextFieldComponent: Component {
             
             let inputState = f(self.inputState)
             
-            self.textView.attributedText = textAttributedStringForStateText(inputState.inputText, fontSize: component.fontSize, textColor: component.textColor, accentTextColor: component.textColor, writingDirection: nil, spoilersRevealed: self.spoilersRevealed, availableEmojis: Set(component.context.animatedEmojiStickers.keys), emojiViewProvider: self.emojiViewProvider)
+            let currentAttributedText = self.textView.attributedText
+            let updatedAttributedText = textAttributedStringForStateText(inputState.inputText, fontSize: component.fontSize, textColor: component.textColor, accentTextColor: component.textColor, writingDirection: nil, spoilersRevealed: self.spoilersRevealed, availableEmojis: Set(component.context.animatedEmojiStickers.keys), emojiViewProvider: self.emojiViewProvider)
+            if currentAttributedText != updatedAttributedText {
+                self.textView.attributedText = updatedAttributedText
+            }
             self.textView.selectedRange = NSMakeRange(inputState.selectionRange.lowerBound, inputState.selectionRange.count)
             
             refreshChatTextInputAttributes(textView: self.textView, primaryTextColor: component.textColor, accentTextColor: component.textColor, baseFontSize: component.fontSize, spoilersRevealed: self.spoilersRevealed, availableEmojis: Set(component.context.animatedEmojiStickers.keys), emojiViewProvider: self.emojiViewProvider)
             
             self.updateEntities()
+            
+            if currentAttributedText != updatedAttributedText && !self.isUpdating {
+                self.state?.updated(transition: Transition(animation: .curve(duration: 0.4, curve: .spring)).withUserData(AnimationHint(kind: .textChanged)))
+            }
+        }
+        
+        public func hasFirstResponder() -> Bool {
+            return self.textView.isFirstResponder
         }
         
         public func insertText(_ text: NSAttributedString) {
             self.updateInputState { state in
                 return state.insertText(text)
             }
-            self.state?.updated(transition: Transition(animation: .curve(duration: 0.4, curve: .spring)).withUserData(AnimationHint(kind: .textChanged)))
+            if !self.isUpdating {
+                self.state?.updated(transition: Transition(animation: .curve(duration: 0.4, curve: .spring)).withUserData(AnimationHint(kind: .textChanged)))
+            }
         }
         
         public func deleteBackward() {
@@ -273,7 +278,9 @@ public final class TextFieldComponent: Component {
             self.updateInputState { _ in
                 return TextFieldComponent.InputState(inputText: text, selectionRange: selectionRange)
             }
-            self.state?.updated(transition: Transition(animation: .curve(duration: 0.4, curve: .spring)).withUserData(AnimationHint(kind: .textChanged)))
+            if !self.isUpdating {
+                self.state?.updated(transition: Transition(animation: .curve(duration: 0.4, curve: .spring)).withUserData(AnimationHint(kind: .textChanged)))
+            }
         }
         
         private func onPaste() -> Bool {
@@ -299,7 +306,9 @@ public final class TextFieldComponent: Component {
                         return InputState(inputText: attributedString)
                     }
                 }
-                self.state?.updated(transition: Transition(animation: .curve(duration: 0.4, curve: .spring)).withUserData(AnimationHint(kind: .textChanged)))
+                if !self.isUpdating {
+                    self.state?.updated(transition: Transition(animation: .curve(duration: 0.4, curve: .spring)).withUserData(AnimationHint(kind: .textChanged)))
+                }
                 component.paste(.text)
                 return false
             }
@@ -354,12 +363,13 @@ public final class TextFieldComponent: Component {
             return true
         }
         
-        public func textViewDidChange(_ textView: UITextView) {
+        public func chatInputTextNodeDidUpdateText() {
             guard let component = self.component else {
                 return
             }
             refreshChatTextInputAttributes(textView: self.textView, primaryTextColor: component.textColor, accentTextColor: component.textColor, baseFontSize: component.fontSize, spoilersRevealed: self.spoilersRevealed, availableEmojis: Set(component.context.animatedEmojiStickers.keys), emojiViewProvider: self.emojiViewProvider)
             refreshChatTextInputTypingAttributes(self.textView, textColor: component.textColor, baseFontSize: component.fontSize)
+            self.textView.updateTextContainerInset()
             
             if self.spoilerIsDisappearing {
                 self.spoilerIsDisappearing = false
@@ -367,11 +377,16 @@ public final class TextFieldComponent: Component {
             }
             
             self.updateEntities()
-            
-            self.state?.updated(transition: Transition(animation: .curve(duration: 0.4, curve: .spring)).withUserData(AnimationHint(kind: .textChanged)))
+            if !self.isUpdating {
+                self.state?.updated(transition: Transition(animation: .curve(duration: 0.4, curve: .spring)).withUserData(AnimationHint(kind: .textChanged)))
+            }
         }
         
-        public func textViewDidChangeSelection(_ textView: UITextView) {
+        public func chatInputTextNodeShouldReturn() -> Bool {
+            return true
+        }
+        
+        public func chatInputTextNodeDidChangeSelection(dueToEditing: Bool) {
             guard let _ = self.component else {
                 return
             }
@@ -380,16 +395,31 @@ public final class TextFieldComponent: Component {
             self.updateEmojiSuggestion(transition: .immediate)
         }
         
-        public func textViewDidBeginEditing(_ textView: UITextView) {
-            self.state?.updated(transition: Transition(animation: .curve(duration: 0.5, curve: .spring)).withUserData(AnimationHint(kind: .textFocusChanged)))
+        public func chatInputTextNodeDidBeginEditing() {
+            guard let component = self.component else {
+                return
+            }
+            if !self.isUpdating {
+                self.state?.updated(transition: Transition(animation: .curve(duration: 0.5, curve: .spring)).withUserData(AnimationHint(kind: .textFocusChanged)))
+            }
+            if component.isOneLineWhenUnfocused {
+                Queue.mainQueue().justDispatch {
+                    self.textView.selectedTextRange = self.textView.textRange(from: self.textView.endOfDocument, to: self.textView.endOfDocument)
+                }
+            }
         }
         
-        public func textViewDidEndEditing(_ textView: UITextView) {
-            self.state?.updated(transition: Transition(animation: .curve(duration: 0.5, curve: .spring)).withUserData(AnimationHint(kind: .textFocusChanged)))
+        public func chatInputTextNodeDidFinishEditing() {
+            if !self.isUpdating {
+                self.state?.updated(transition: Transition(animation: .curve(duration: 0.5, curve: .spring)).withUserData(AnimationHint(kind: .textFocusChanged)))
+            }
         }
-                
-        @available(iOS 16.0, *)
-        public func textView(_ textView: UITextView, editMenuForTextIn range: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu? {
+        
+        public func chatInputTextNodeBackspaceWhileEmpty() {
+        }
+        
+        @available(iOS 13.0, *)
+        public func chatInputTextNodeMenu(forTextRange textRange: NSRange, suggestedActions: [UIMenuElement]) -> UIMenu {
             let filteredActions: Set<String> = Set([
                 "com.apple.menu.format",
                 "com.apple.menu.replace"
@@ -401,7 +431,7 @@ public final class TextFieldComponent: Component {
                     return true
                 }
             }
-            guard let component = self.component, !textView.attributedText.string.isEmpty && textView.selectedRange.length > 0 else {
+            guard let component = self.component, let attributedText = self.textView.attributedText, !attributedText.string.isEmpty, self.textView.selectedRange.length > 0 else {
                 return UIMenu(children: suggestedActions)
             }
             let strings = component.strings
@@ -468,6 +498,36 @@ public final class TextFieldComponent: Component {
                     self.updateSpoilersRevealed(animated: animated)
                 }
             })
+            actions.insert(UIAction(title: strings.TextFormat_Quote, image: nil) { [weak self] action in
+                if let self {
+                    var animated = false
+                    let attributedText = self.inputState.inputText
+                    attributedText.enumerateAttributes(in: NSMakeRange(0, attributedText.length), options: [], using: { attributes, _, _ in
+                        if let _ = attributes[ChatTextInputAttributes.block] {
+                            animated = true
+                        }
+                    })
+                    
+                    self.toggleAttribute(key: ChatTextInputAttributes.block, value: ChatTextInputTextQuoteAttribute(kind: .quote))
+                    
+                    self.updateSpoilersRevealed(animated: animated)
+                }
+            }, at: 0)
+            actions.append(UIAction(title: strings.TextFormat_Code, image: nil) { [weak self] action in
+                if let self {
+                    var animated = false
+                    let attributedText = self.inputState.inputText
+                    attributedText.enumerateAttributes(in: NSMakeRange(0, attributedText.length), options: [], using: { attributes, _, _ in
+                        if let _ = attributes[ChatTextInputAttributes.block] {
+                            animated = true
+                        }
+                    })
+                    
+                    self.toggleAttribute(key: ChatTextInputAttributes.block, value: ChatTextInputTextQuoteAttribute(kind: .code(language: nil)))
+                    
+                    self.updateSpoilersRevealed(animated: animated)
+                }
+            })
             
             var updatedActions = suggestedActions
             let formatMenu = UIMenu(title: strings.TextFormat_Format, image: nil, children: actions)
@@ -476,9 +536,148 @@ public final class TextFieldComponent: Component {
             return UIMenu(children: updatedActions)
         }
         
-        private func toggleAttribute(key: NSAttributedString.Key) {
+        public func chatInputTextNode(shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+            return true
+        }
+        
+        public func chatInputTextNodeShouldCopy() -> Bool {
+            return true
+        }
+        
+        public func chatInputTextNodeShouldPaste() -> Bool {
+            return self.onPaste()
+        }
+        
+        public func chatInputTextNodeShouldRespondToAction(action: Selector) -> Bool {
+            if action == #selector(self.paste(_:)) {
+                return true
+            }
+            return true
+        }
+        
+        public func chatInputTextNodeTargetForAction(action: Selector) -> ChatInputTextNode.TargetForAction? {
+            if action == makeSelectorFromString("_accessibilitySpeak:") {
+                if case .format = self.inputMenu.state {
+                    return ChatInputTextNode.TargetForAction(target: nil)
+                } else if self.textView.selectedRange.length > 0 {
+                    return ChatInputTextNode.TargetForAction(target: self)
+                } else {
+                    return ChatInputTextNode.TargetForAction(target: nil)
+                }
+            } else if action == makeSelectorFromString("_accessibilitySpeakSpellOut:") {
+                if case .format = self.inputMenu.state {
+                    return ChatInputTextNode.TargetForAction(target: nil)
+                } else if self.textView.selectedRange.length > 0 {
+                    return nil
+                } else {
+                    return ChatInputTextNode.TargetForAction(target: nil)
+                }
+            }
+            else if action == makeSelectorFromString("_accessibilitySpeakLanguageSelection:") || action == makeSelectorFromString("_accessibilityPauseSpeaking:") || action == makeSelectorFromString("_accessibilitySpeakSentence:") {
+                return ChatInputTextNode.TargetForAction(target: nil)
+            } else if action == makeSelectorFromString("_showTextStyleOptions:") {
+                if #available(iOS 16.0, *) {
+                    return ChatInputTextNode.TargetForAction(target: nil)
+                } else {
+                    if case .general = self.inputMenu.state {
+                        if self.textView.attributedText == nil || self.textView.attributedText!.length == 0 {
+                            return ChatInputTextNode.TargetForAction(target: nil)
+                        }
+                        return ChatInputTextNode.TargetForAction(target: self)
+                    } else {
+                        return ChatInputTextNode.TargetForAction(target: nil)
+                    }
+                }
+            } else if action == #selector(self.formatAttributesBold(_:)) || action == #selector(self.formatAttributesItalic(_:)) || action == #selector(self.formatAttributesMonospace(_:)) || action == #selector(self.formatAttributesStrikethrough(_:)) || action == #selector(self.formatAttributesUnderline(_:)) || action == #selector(self.formatAttributesSpoiler(_:)) || action == #selector(self.formatAttributesQuote(_:)) || action == #selector(self.formatAttributesCodeBlock(_:)) {
+                if case .format = self.inputMenu.state {
+                    if action == #selector(self.formatAttributesSpoiler(_:)) {
+                        let selectedRange = self.textView.selectedRange
+                        var intersectsMonospace = false
+                        self.inputState.inputText.enumerateAttributes(in: selectedRange, options: [], using: { attributes, _, _ in
+                            if let _ = attributes[ChatTextInputAttributes.monospace] {
+                                intersectsMonospace = true
+                            }
+                        })
+                        if !intersectsMonospace {
+                            return ChatInputTextNode.TargetForAction(target: self)
+                        } else {
+                            return ChatInputTextNode.TargetForAction(target: nil)
+                        }
+                    } else if action == #selector(self.formatAttributesQuote(_:)) {
+                        return ChatInputTextNode.TargetForAction(target: self)
+                    } else if action == #selector(self.formatAttributesCodeBlock(_:)) {
+                        return ChatInputTextNode.TargetForAction(target: self)
+                    } else if action == #selector(self.formatAttributesMonospace(_:)) {
+                        var intersectsSpoiler = false
+                        self.inputState.inputText.enumerateAttributes(in: self.textView.selectedRange, options: [], using: { attributes, _, _ in
+                            if let _ = attributes[ChatTextInputAttributes.spoiler] {
+                                intersectsSpoiler = true
+                            }
+                        })
+                        if !intersectsSpoiler {
+                            return ChatInputTextNode.TargetForAction(target: self)
+                        } else {
+                            return ChatInputTextNode.TargetForAction(target: nil)
+                        }
+                    } else {
+                        return ChatInputTextNode.TargetForAction(target: self)
+                    }
+                } else {
+                    return ChatInputTextNode.TargetForAction(target: nil)
+                }
+            }
+            if case .format = self.inputMenu.state {
+                return ChatInputTextNode.TargetForAction(target: nil)
+            }
+            return nil
+        }
+        
+        @objc func _showTextStyleOptions(_ sender: Any) {
+            let selectionRect: CGRect
+            if let selectedTextRange = self.textView.selectedTextRange {
+                selectionRect = self.textView.firstRect(for: selectedTextRange)
+            } else {
+                selectionRect = self.textView.bounds
+            }
+            
+            self.inputMenu.format(view: self.textView, rect: selectionRect.offsetBy(dx: 0.0, dy: -self.textView.contentOffset.y).insetBy(dx: 0.0, dy: -1.0))
+        }
+        
+        @objc func formatAttributesBold(_ sender: Any) {
+            self.inputMenu.back()
+        }
+        
+        @objc func formatAttributesItalic(_ sender: Any) {
+            self.inputMenu.back()
+        }
+        
+        @objc func formatAttributesMonospace(_ sender: Any) {
+            self.inputMenu.back()
+        }
+        
+        @objc func formatAttributesStrikethrough(_ sender: Any) {
+            self.inputMenu.back()
+        }
+        
+        @objc func formatAttributesUnderline(_ sender: Any) {
+            self.inputMenu.back()
+        }
+        
+        @objc func formatAttributesQuote(_ sender: Any) {
+            self.inputMenu.back()
+        }
+        
+        @objc func formatAttributesCodeBlock(_ sender: Any) {
+            self.inputMenu.back()
+        }
+        
+        @objc func formatAttributesSpoiler(_ sender: Any) {
+            self.inputMenu.back()
+        }
+        
+        private func toggleAttribute(key: NSAttributedString.Key, value: Any? = nil) {
             self.updateInputState { state in
-                return state.addFormattingAttribute(attribute: key)
+                return state.addFormattingAttribute(attribute: key, value: value)
             }
         }
                 
@@ -523,11 +722,13 @@ public final class TextFieldComponent: Component {
             return self.inputState.inputText
         }
         
-        public func setAttributedText(_ string: NSAttributedString) {
+        public func setAttributedText(_ string: NSAttributedString, updateState: Bool) {
             self.updateInputState { _ in
                 return TextFieldComponent.InputState(inputText: string, selectionRange: string.length ..< string.length)
             }
-            self.state?.updated(transition: Transition(animation: .curve(duration: 0.4, curve: .spring)).withUserData(AnimationHint(kind: .textChanged)))
+            if updateState && !self.isUpdating {
+                self.state?.updated(transition: Transition(animation: .curve(duration: 0.4, curve: .spring)).withUserData(AnimationHint(kind: .textChanged)))
+            }
         }
         
         public func activateInput() {
@@ -625,7 +826,7 @@ public final class TextFieldComponent: Component {
             }
 
             var spoilerRects: [CGRect] = []
-            var customEmojiRects: [(CGRect, ChatTextInputTextCustomEmojiAttribute)] = []
+            var customEmojiRects: [(CGRect, ChatTextInputTextCustomEmojiAttribute, CGFloat)] = []
 
             let textView = self.textView
             if let attributedText = textView.attributedText {
@@ -669,9 +870,13 @@ public final class TextFieldComponent: Component {
                     
                     if let value = attributes[ChatTextInputAttributes.customEmoji] as? ChatTextInputTextCustomEmojiAttribute {
                         if let start = textView.position(from: beginning, offset: range.location), let end = textView.position(from: start, offset: range.length), let textRange = textView.textRange(from: start, to: end) {
+                            var emojiFontSize = component.fontSize
+                            if let font = attributes[.font] as? UIFont {
+                                emojiFontSize = font.pointSize
+                            }
                             let textRects = textView.selectionRects(for: textRange)
                             for textRect in textRects {
-                                customEmojiRects.append((textRect.rect, value))
+                                customEmojiRects.append((textRect.rect, value, emojiFontSize))
                                 break
                             }
                         }
@@ -727,8 +932,8 @@ public final class TextFieldComponent: Component {
                         
             var hasTracking = false
             var hasTrackingView = false
-            if self.textView.selectedRange.length == 0 && self.textView.selectedRange.location > 0 {
-                let selectedSubstring = self.textView.attributedText.attributedSubstring(from: NSRange(location: 0, length: self.textView.selectedRange.location))
+            if let attributedText = self.textView.attributedText, self.textView.selectedRange.length == 0, self.textView.selectedRange.location > 0 {
+                let selectedSubstring = attributedText.attributedSubstring(from: NSRange(location: 0, length: self.textView.selectedRange.location))
                 if let lastCharacter = selectedSubstring.string.last, String(lastCharacter).isSingleEmoji {
                     let queryLength = (String(lastCharacter) as NSString).length
                     if selectedSubstring.attribute(ChatTextInputAttributes.customEmoji, at: selectedSubstring.length - queryLength, effectiveRange: nil) == nil {
@@ -774,7 +979,45 @@ public final class TextFieldComponent: Component {
             component.externalState.hasTrackingView = hasTrackingView
         }
         
+        func rightmostPositionOfFirstLine() -> CGPoint? {
+            let glyphRange = self.textView.layoutManager.glyphRange(for: self.textView.textContainer)
+            
+            if glyphRange.length == 0 { return nil }
+                
+            var lineRect = CGRect.zero
+            var glyphIndexForStringStart = glyphRange.location
+            var lineRange: NSRange = NSRange()
+                
+            repeat {
+                lineRect = self.textView.layoutManager.lineFragmentUsedRect(forGlyphAt: glyphIndexForStringStart, effectiveRange: &lineRange)
+                if NSMaxRange(lineRange) > glyphRange.length {
+                    lineRange.length = glyphRange.length - lineRange.location
+                }
+                glyphIndexForStringStart = NSMaxRange(lineRange)
+            } while glyphIndexForStringStart < NSMaxRange(glyphRange) && !NSLocationInRange(glyphRange.location, lineRange)
+                
+            let padding = self.textView.defaultTextContainerInset.left
+            var rightmostX = lineRect.maxX + padding
+            let rightmostY = lineRect.minY + self.textView.defaultTextContainerInset.top
+            
+            let nsString = (self.textView.text as NSString)
+            let firstLineEndRange = NSMakeRange(lineRange.location + lineRange.length - 1, 1)
+            if nsString.length > firstLineEndRange.location + firstLineEndRange.length {
+                let lastChar = nsString.substring(with: firstLineEndRange)
+                if lastChar == " " {
+                    rightmostX -= 2.0
+                }
+            }
+            
+            return CGPoint(x: rightmostX, y: rightmostY)
+        }
+        
         func update(component: TextFieldComponent, availableSize: CGSize, state: EmptyComponentState, environment: Environment<Empty>, transition: Transition) -> CGSize {
+            self.isUpdating = true
+            defer {
+                self.isUpdating = false
+            }
+            
             self.component = component
             self.state = state
             
@@ -782,6 +1025,10 @@ public final class TextFieldComponent: Component {
                 component.externalState.initialText = nil
                 self.updateInputState { _ in
                     return TextFieldComponent.InputState(inputText: initialText)
+                }
+            } else if let resetText = component.resetText {
+                self.updateInputState { _ in
+                    return TextFieldComponent.InputState(inputText: resetText)
                 }
             }
             
@@ -795,27 +1042,52 @@ public final class TextFieldComponent: Component {
                 }
             }
             
-            if self.textView.textContainerInset != component.insets {
-                self.textView.textContainerInset = component.insets
-            }
-            self.textContainer.size = CGSize(width: availableSize.width - self.textView.textContainerInset.left - self.textView.textContainerInset.right, height: 10000000.0)
-            self.layoutManager.ensureLayout(for: self.textContainer)
-            
-            let boundingRect = self.layoutManager.boundingRect(forGlyphRange: NSRange(location: 0, length: self.textStorage.length), in: self.textContainer)
-            let size = CGSize(width: availableSize.width, height: min(availableSize.height, ceil(boundingRect.height) + self.textView.textContainerInset.top + self.textView.textContainerInset.bottom))
-            
             let wasEditing = component.externalState.isEditing
             let isEditing = self.textView.isFirstResponder
             
-            let refreshScrolling = self.textView.bounds.size != size
-            self.textView.frame = CGRect(origin: CGPoint(), size: size)
+            var innerTextInsets = component.insets
+            innerTextInsets.left = 0.0
+            
+            let textLeftInset = component.insets.left + 8.0
+            
+            if self.textView.defaultTextContainerInset != innerTextInsets {
+                self.textView.defaultTextContainerInset = innerTextInsets
+            }
+            
+            var availableSize = availableSize
+            if !isEditing && component.isOneLineWhenUnfocused {
+                availableSize.width += 32.0
+            }
+            
+            let textHeight = self.textView.textHeightForWidth(availableSize.width - component.insets.left, rightInset: innerTextInsets.right)
+            let size = CGSize(width: availableSize.width, height: min(textHeight, availableSize.height))
+            
+            let textFrame = CGRect(origin: CGPoint(x: textLeftInset, y: 0.0), size: CGSize(width: size.width - component.insets.left, height: size.height))
+            
+            var refreshScrolling = self.textView.bounds.size != textFrame.size
+            if component.isOneLineWhenUnfocused && !isEditing && isEditing != wasEditing {
+                refreshScrolling = true
+            }
+            
+            self.textView.theme = ChatInputTextView.Theme(
+                quote: ChatInputTextView.Theme.Quote(
+                    background: component.textColor.withMultipliedAlpha(0.1),
+                    foreground: component.textColor,
+                    lineStyle: .solid(color: component.textColor),
+                    codeBackground: component.textColor.withMultipliedAlpha(0.1),
+                    codeForeground: component.textColor
+                )
+            )
+            
+            self.textView.frame = textFrame
+            self.textView.updateLayout(size: textFrame.size)
             self.textView.panGestureRecognizer.isEnabled = isEditing
             
             self.updateEmojiSuggestion(transition: .immediate)
             
             if refreshScrolling {
                 if isEditing {
-                    if wasEditing {
+                    if wasEditing || component.isOneLineWhenUnfocused {
                         self.textView.setContentOffset(CGPoint(x: 0.0, y: max(0.0, self.textView.contentSize.height - self.textView.bounds.height)), animated: false)
                     }
                 } else {
@@ -823,23 +1095,77 @@ public final class TextFieldComponent: Component {
                 }
             }
             
-            component.externalState.hasText = self.textStorage.length != 0
+            component.externalState.hasText = self.textView.textStorage.length != 0
             component.externalState.isEditing = isEditing
-            component.externalState.textLength = self.textStorage.string.count
+            component.externalState.textLength = self.textView.textStorage.string.count
             
-            if component.hideKeyboard {
+            if let inputView = component.customInputView {
+                if self.textView.inputView == nil {
+                    self.textView.inputView = inputView
+                    if self.textView.isFirstResponder {
+                        // Avoid layout cycle
+                        DispatchQueue.main.async { [weak self] in
+                            self?.textView.reloadInputViews()
+                        }
+                    }
+                }
+            } else if component.hideKeyboard {
                 if self.textView.inputView == nil {
                     self.textView.inputView = EmptyInputView()
                     if self.textView.isFirstResponder {
-                        self.textView.reloadInputViews()
+                        // Avoid layout cycle
+                        DispatchQueue.main.async { [weak self] in
+                            self?.textView.reloadInputViews()
+                        }
                     }
                 }
             } else {
                 if self.textView.inputView != nil {
                     self.textView.inputView = nil
                     if self.textView.isFirstResponder {
-                        self.textView.reloadInputViews()
+                        // Avoid layout cycle
+                        DispatchQueue.main.async { [weak self] in
+                            self?.textView.reloadInputViews()
+                        }
                     }
+                }
+            }
+            
+            if component.isOneLineWhenUnfocused, let position = self.rightmostPositionOfFirstLine() {
+                let ellipsisSize = self.ellipsisView.update(
+                    transition: transition,
+                    component: AnyComponent(
+                        Text(
+                            text: "\u{2026}",
+                            font: Font.regular(component.fontSize),
+                            color: component.textColor
+                        )
+                    ),
+                    environment: {},
+                    containerSize: availableSize
+                )
+                if let view = self.ellipsisView.view {
+                    if view.superview == nil {
+                        view.alpha = 0.0
+                        view.isUserInteractionEnabled = false
+                        self.textView.addSubview(view)
+                    }
+                    let ellipsisFrame = CGRect(origin: CGPoint(x: position.x - 8.0, y: position.y), size: ellipsisSize)
+                    transition.setFrame(view: view, frame: ellipsisFrame)
+                    
+                    let hasMoreThanOneLine = ellipsisFrame.maxY < self.textView.contentSize.height - 12.0
+                    
+                    let ellipsisTransition: Transition
+                    if isEditing {
+                        ellipsisTransition = .easeInOut(duration: 0.2)
+                    } else {
+                        ellipsisTransition = .easeInOut(duration: 0.3)
+                    }
+                    ellipsisTransition.setAlpha(view: view, alpha: isEditing || !hasMoreThanOneLine ? 0.0 : 1.0)
+                }
+            } else {
+                if let view = self.ellipsisView.view {
+                    view.removeFromSuperview()
                 }
             }
             
@@ -869,28 +1195,95 @@ extension TextFieldComponent.InputState {
         return TextFieldComponent.InputState(inputText: inputText, selectionRange: selectionPosition ..< selectionPosition)
     }
     
-    public func addFormattingAttribute(attribute: NSAttributedString.Key) -> TextFieldComponent.InputState {
+    public func addFormattingAttribute(attribute: NSAttributedString.Key, value: Any? = nil) -> TextFieldComponent.InputState {
         if !self.selectionRange.isEmpty {
             let nsRange = NSRange(location: self.selectionRange.lowerBound, length: self.selectionRange.count)
             var addAttribute = true
             var attributesToRemove: [NSAttributedString.Key] = []
-            self.inputText.enumerateAttributes(in: nsRange, options: .longestEffectiveRangeNotRequired) { attributes, range, stop in
+            self.inputText.enumerateAttributes(in: nsRange, options: .longestEffectiveRangeNotRequired) { attributes, range, _ in
                 for (key, _) in attributes {
-                    if key == attribute && range == nsRange {
+                    if key == attribute {
                         addAttribute = false
                         attributesToRemove.append(key)
                     }
                 }
             }
             
+            var selectionRange = self.selectionRange
+            
             let result = NSMutableAttributedString(attributedString: self.inputText)
             for attribute in attributesToRemove {
-                result.removeAttribute(attribute, range: nsRange)
+                if attribute == ChatTextInputAttributes.block {
+                    var removeRange = nsRange
+                    
+                    var selectionIndex = nsRange.upperBound
+                    if nsRange.upperBound != result.length && (result.string as NSString).character(at: nsRange.upperBound) != 0x0a {
+                        result.insert(NSAttributedString(string: "\n"), at: nsRange.upperBound)
+                        selectionIndex += 1
+                        removeRange.length += 1
+                    }
+                    if nsRange.lowerBound != 0 && (result.string as NSString).character(at: nsRange.lowerBound - 1) != 0x0a {
+                        result.insert(NSAttributedString(string: "\n"), at: nsRange.lowerBound)
+                        selectionIndex += 1
+                        removeRange.location += 1
+                    } else if nsRange.lowerBound != 0 {
+                        removeRange.location -= 1
+                        removeRange.length += 1
+                    }
+                    
+                    if removeRange.lowerBound > result.length {
+                        removeRange = NSRange(location: result.length, length: 0)
+                    } else if removeRange.upperBound > result.length {
+                        removeRange = NSRange(location: removeRange.lowerBound, length: result.length - removeRange.lowerBound)
+                    }
+                    result.removeAttribute(attribute, range: removeRange)
+                    
+                    if selectionRange.lowerBound > result.length {
+                        selectionRange = result.length ..< result.length
+                    } else if selectionRange.upperBound > result.length {
+                        selectionRange = selectionRange.lowerBound ..< result.length
+                    }
+                    
+                    // Prevent merge back
+                    result.enumerateAttributes(in: NSRange(location: selectionIndex, length: result.length - selectionIndex), options: .longestEffectiveRangeNotRequired) { attributes, range, _ in
+                        for (key, value) in attributes {
+                            if let value = value as? ChatTextInputTextQuoteAttribute {
+                                result.removeAttribute(key, range: range)
+                                result.addAttribute(key, value: ChatTextInputTextQuoteAttribute(kind: value.kind), range: range)
+                            }
+                        }
+                    }
+                    
+                    selectionRange = selectionIndex ..< selectionIndex
+                } else {
+                    result.removeAttribute(attribute, range: nsRange)
+                }
             }
+            
             if addAttribute {
-                result.addAttribute(attribute, value: true as Bool, range: nsRange)
+                if attribute == ChatTextInputAttributes.block {
+                    result.addAttribute(attribute, value: value ?? ChatTextInputTextQuoteAttribute(kind: .quote), range: nsRange)
+                    var selectionIndex = nsRange.upperBound
+                    if nsRange.upperBound != result.length && (result.string as NSString).character(at: nsRange.upperBound) != 0x0a {
+                        result.insert(NSAttributedString(string: "\n"), at: nsRange.upperBound)
+                        selectionIndex += 1
+                    }
+                    if nsRange.lowerBound != 0 && (result.string as NSString).character(at: nsRange.lowerBound - 1) != 0x0a {
+                        result.insert(NSAttributedString(string: "\n"), at: nsRange.lowerBound)
+                        selectionIndex += 1
+                    }
+                    selectionRange = selectionIndex ..< selectionIndex
+                } else {
+                    result.addAttribute(attribute, value: true as Bool, range: nsRange)
+                }
             }
-            return TextFieldComponent.InputState(inputText: result, selectionRange: self.selectionRange)
+            if selectionRange.lowerBound > result.length {
+                selectionRange = result.length ..< result.length
+            } else if selectionRange.upperBound > result.length {
+                selectionRange = selectionRange.lowerBound ..< result.length
+            }
+            
+            return TextFieldComponent.InputState(inputText: result, selectionRange: selectionRange)
         } else {
             return self
         }

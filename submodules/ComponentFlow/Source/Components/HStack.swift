@@ -41,11 +41,14 @@ public final class HStack<ChildEnvironment: Equatable>: CombinedComponent {
                 size.width += child.size.width
                 size.height = max(size.height, child.size.height)
             }
-
+            size.width += context.component.spacing * CGFloat(updatedChildren.count - 1)
+            
             var nextX = 0.0
             for child in updatedChildren {
                 context.add(child
                     .position(child.size.centered(in: CGRect(origin: CGPoint(x: nextX, y: floor((size.height - child.size.height) * 0.5)), size: child.size)).center)
+                    .appear(.default(scale: true, alpha: true))
+                    .disappear(.default(scale: true, alpha: true))
                 )
                 nextX += child.size.width
                 nextX += context.component.spacing

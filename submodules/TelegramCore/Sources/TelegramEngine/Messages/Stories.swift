@@ -6,11 +6,14 @@ import TelegramApi
 public enum EngineStoryInputMedia {
     case image(dimensions: PixelDimensions, data: Data, stickers: [TelegramMediaFile])
     case video(dimensions: PixelDimensions, duration: Double, resource: TelegramMediaResource, firstFrameFile: TempBoxFile?, stickers: [TelegramMediaFile])
+    case existing(media: Media)
     
     var embeddedStickers: [TelegramMediaFile] {
         switch self {
         case let .image(_, _, stickers), let .video(_, _, _, _, stickers):
             return stickers
+        case .existing:
+            return []
         }
     }
 }
@@ -36,25 +39,82 @@ public extension EngineStoryPrivacy {
     }
 }
 
+public extension EngineStoryItem.ForwardInfo {
+    init?(_ forwardInfo: Stories.Item.ForwardInfo, transaction: Transaction) {
+        switch forwardInfo {
+        case let .known(peerId, storyId, isModified):
+            if let peer = transaction.getPeer(peerId) {
+                self = .known(peer: EnginePeer(peer), storyId: storyId, isModified: isModified)
+            } else {
+                return nil
+            }
+        case let .unknown(name, isModified):
+            self = .unknown(name: name, isModified: isModified)
+        }
+    }
+    
+    init?(_ forwardInfo: Stories.Item.ForwardInfo, peers: [PeerId: Peer]) {
+        switch forwardInfo {
+        case let .known(peerId, storyId, isModified):
+            if let peer = peers[peerId] {
+                self = .known(peer: EnginePeer(peer), storyId: storyId, isModified: isModified)
+            } else {
+                return nil
+            }
+        case let .unknown(name, isModified):
+            self = .unknown(name: name, isModified: isModified)
+        }
+    }
+}
+
 public enum Stories {
     public final class Item: Codable, Equatable {
         public struct Views: Codable, Equatable {
             private enum CodingKeys: String, CodingKey {
                 case seenCount = "seenCount"
                 case reactedCount = "reactedCount"
+                case forwardCount = "forwardCount"
                 case seenPeerIds = "seenPeerIds"
+                case reactions = "reactions"
                 case hasList = "hasList"
             }
             
             public var seenCount: Int
             public var reactedCount: Int
+            public var forwardCount: Int
             public var seenPeerIds: [PeerId]
+            public var reactions: [MessageReaction]
             public var hasList: Bool
             
-            public init(seenCount: Int, reactedCount: Int, seenPeerIds: [PeerId], hasList: Bool) {
+            public var isEmpty: Bool {
+                if self.seenCount != 0 {
+                    return false
+                }
+                if self.reactedCount != 0 {
+                    return false
+                }
+                if self.forwardCount != 0 {
+                    return false
+                }
+                if !self.seenPeerIds.isEmpty {
+                    return false
+                }
+                if !self.reactions.isEmpty {
+                    return false
+                }
+                if self.hasList {
+                    return false
+                }
+                
+                return true
+            }
+            
+            public init(seenCount: Int, reactedCount: Int, forwardCount: Int, seenPeerIds: [PeerId], reactions: [MessageReaction], hasList: Bool) {
                 self.seenCount = seenCount
                 self.reactedCount = reactedCount
+                self.forwardCount = forwardCount
                 self.seenPeerIds = seenPeerIds
+                self.reactions = reactions
                 self.hasList = hasList
             }
             
@@ -63,7 +123,9 @@ public enum Stories {
                 
                 self.seenCount = Int(try container.decode(Int32.self, forKey: .seenCount))
                 self.reactedCount = Int(try container.decodeIfPresent(Int32.self, forKey: .reactedCount) ?? 0)
+                self.forwardCount = Int(try container.decodeIfPresent(Int32.self, forKey: .forwardCount) ?? 0)
                 self.seenPeerIds = try container.decode([Int64].self, forKey: .seenPeerIds).map(PeerId.init)
+                self.reactions = try container.decodeIfPresent([MessageReaction].self, forKey: .reactions) ?? []
                 self.hasList = try container.decodeIfPresent(Bool.self, forKey: .hasList) ?? true
             }
             
@@ -72,7 +134,9 @@ public enum Stories {
                 
                 try container.encode(Int32(clamping: self.seenCount), forKey: .seenCount)
                 try container.encode(Int32(clamping: self.reactedCount), forKey: .reactedCount)
+                try container.encode(Int32(clamping: self.forwardCount), forKey: .forwardCount)
                 try container.encode(self.seenPeerIds.map { $0.toInt64() }, forKey: .seenPeerIds)
+                try container.encode(self.reactions, forKey: .reactions)
                 try container.encode(self.hasList, forKey: .hasList)
             }
         }
@@ -129,6 +193,52 @@ public enum Stories {
             }
         }
         
+        public enum ForwardInfo: Codable, Equatable {
+            public enum DecodingError: Error {
+                case generic
+            }
+            
+            private enum CodingKeys: CodingKey {
+                case discriminator
+                case authorPeerId
+                case storyId
+                case authorName
+                case isModified
+            }
+            
+            case known(peerId: EnginePeer.Id, storyId: Int32, isModified: Bool)
+            case unknown(name: String, isModified: Bool)
+            
+            public init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                                
+                switch try container.decode(Int32.self, forKey: .discriminator) {
+                case 0:
+                    self = .known(peerId: EnginePeer.Id(try container.decode(Int64.self, forKey: .authorPeerId)), storyId: try container.decode(Int32.self, forKey: .storyId), isModified: try container.decodeIfPresent(Bool.self, forKey: .isModified) ?? false)
+                case 1:
+                    self = .unknown(name: try container.decode(String.self, forKey: .authorName), isModified: try container.decodeIfPresent(Bool.self, forKey: .isModified) ?? false)
+                default:
+                    throw DecodingError.generic
+                }
+            }
+            
+            public func encode(to encoder: Encoder) throws {
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                
+                switch self {
+                case let .known(peerId, storyId, isModified):
+                    try container.encode(0 as Int32, forKey: .discriminator)
+                    try container.encode(peerId.toInt64(), forKey: .authorPeerId)
+                    try container.encode(storyId, forKey: .storyId)
+                    try container.encode(isModified, forKey: .isModified)
+                case let .unknown(name, isModified):
+                    try container.encode(1 as Int32, forKey: .discriminator)
+                    try container.encode(name, forKey: .authorName)
+                    try container.encode(isModified, forKey: .isModified)
+                }
+            }
+        }
+        
         private enum CodingKeys: String, CodingKey {
             case id
             case timestamp
@@ -147,7 +257,9 @@ public enum Stories {
             case isSelectedContacts
             case isForwardingDisabled
             case isEdited
+            case isMy
             case myReaction
+            case forwardInfo
         }
         
         public let id: Int32
@@ -167,7 +279,9 @@ public enum Stories {
         public let isSelectedContacts: Bool
         public let isForwardingDisabled: Bool
         public let isEdited: Bool
+        public let isMy: Bool
         public let myReaction: MessageReaction.Reaction?
+        public let forwardInfo: ForwardInfo?
         
         public init(
             id: Int32,
@@ -187,7 +301,9 @@ public enum Stories {
             isSelectedContacts: Bool,
             isForwardingDisabled: Bool,
             isEdited: Bool,
-            myReaction: MessageReaction.Reaction?
+            isMy: Bool,
+            myReaction: MessageReaction.Reaction?,
+            forwardInfo: ForwardInfo?
         ) {
             self.id = id
             self.timestamp = timestamp
@@ -206,7 +322,9 @@ public enum Stories {
             self.isSelectedContacts = isSelectedContacts
             self.isForwardingDisabled = isForwardingDisabled
             self.isEdited = isEdited
+            self.isMy = isMy
             self.myReaction = myReaction
+            self.forwardInfo = forwardInfo
         }
         
         public init(from decoder: Decoder) throws {
@@ -235,7 +353,9 @@ public enum Stories {
             self.isSelectedContacts = try container.decodeIfPresent(Bool.self, forKey: .isSelectedContacts) ?? false
             self.isForwardingDisabled = try container.decodeIfPresent(Bool.self, forKey: .isForwardingDisabled) ?? false
             self.isEdited = try container.decodeIfPresent(Bool.self, forKey: .isEdited) ?? false
+            self.isMy = try container.decodeIfPresent(Bool.self, forKey: .isMy) ?? false
             self.myReaction = try container.decodeIfPresent(MessageReaction.Reaction.self, forKey: .myReaction)
+            self.forwardInfo = try container.decodeIfPresent(ForwardInfo.self, forKey: .forwardInfo)
         }
         
         public func encode(to encoder: Encoder) throws {
@@ -265,7 +385,9 @@ public enum Stories {
             try container.encode(self.isSelectedContacts, forKey: .isSelectedContacts)
             try container.encode(self.isForwardingDisabled, forKey: .isForwardingDisabled)
             try container.encode(self.isEdited, forKey: .isEdited)
+            try container.encode(self.isMy, forKey: .isMy)
             try container.encodeIfPresent(self.myReaction, forKey: .myReaction)
+            try container.encodeIfPresent(self.forwardInfo, forKey: .forwardInfo)
         }
         
         public static func ==(lhs: Item, rhs: Item) -> Bool {
@@ -330,7 +452,9 @@ public enum Stories {
             if lhs.myReaction != rhs.myReaction {
                 return false
             }
-            
+            if lhs.forwardInfo != rhs.forwardInfo {
+                return false
+            }
             return true
         }
     }
@@ -713,10 +837,12 @@ private func prepareUploadStoryContent(account: Account, media: EngineStoryInput
         )
         
         return fileMedia
+    case let .existing(media):
+        return media
     }
 }
 
-private func uploadedStoryContent(postbox: Postbox, network: Network, media: Media, embeddedStickers: [TelegramMediaFile], accountPeerId: PeerId, messageMediaPreuploadManager: MessageMediaPreuploadManager, revalidationContext: MediaReferenceRevalidationContext, auxiliaryMethods: AccountAuxiliaryMethods, passFetchProgress: Bool) -> (signal: Signal<PendingMessageUploadedContentResult?, NoError>, media: Media) {
+private func uploadedStoryContent(postbox: Postbox, network: Network, media: Media, mediaReference: AnyMediaReference?, embeddedStickers: [TelegramMediaFile], accountPeerId: PeerId, messageMediaPreuploadManager: MessageMediaPreuploadManager, revalidationContext: MediaReferenceRevalidationContext, auxiliaryMethods: AccountAuxiliaryMethods, passFetchProgress: Bool) -> (signal: Signal<PendingMessageUploadedContentResult?, NoError>, media: Media) {
     let originalMedia: Media = media
     let contentToUpload: MessageContentToUpload
     
@@ -741,7 +867,8 @@ private func uploadedStoryContent(postbox: Postbox, network: Network, media: Med
         messageId: nil,
         attributes: attributes,
         text: "",
-        media: [media]
+        media: [media],
+        mediaReference: mediaReference
     )
         
     let contentSignal: Signal<PendingMessageUploadedContentResult, PendingMessageUploadError>
@@ -806,7 +933,7 @@ private func apiInputPrivacyRules(privacy: EngineStoryPrivacy, transaction: Tran
     return privacyRules
 }
 
-func _internal_uploadStory(account: Account, media: EngineStoryInputMedia, mediaAreas: [MediaArea], text: String, entities: [MessageTextEntity], pin: Bool, privacy: EngineStoryPrivacy, isForwardingDisabled: Bool, period: Int, randomId: Int64) -> Signal<Int32, NoError> {
+func _internal_uploadStory(account: Account, target: Stories.PendingTarget, media: EngineStoryInputMedia, mediaAreas: [MediaArea], text: String, entities: [MessageTextEntity], pin: Bool, privacy: EngineStoryPrivacy, isForwardingDisabled: Bool, period: Int, randomId: Int64, forwardInfo: Stories.PendingForwardInfo?) -> Signal<Int32, NoError> {
     let inputMedia = prepareUploadStoryContent(account: account, media: media)
     
     return (account.postbox.transaction { transaction in
@@ -821,6 +948,7 @@ func _internal_uploadStory(account: Account, media: EngineStoryInputMedia, media
             stableId = Int32.random(in: 2000000 ..< Int32.max)
         }
         currentState.items.append(Stories.PendingItem(
+            target: target,
             stableId: stableId,
             timestamp: Int32(Date().timeIntervalSince1970),
             media: inputMedia,
@@ -832,7 +960,8 @@ func _internal_uploadStory(account: Account, media: EngineStoryInputMedia, media
             privacy: privacy,
             isForwardingDisabled: isForwardingDisabled,
             period: Int32(period),
-            randomId: randomId
+            randomId: randomId,
+            forwardInfo: forwardInfo
         ))
         transaction.setLocalStoryState(state: CodableEntry(currentState))
         return stableId
@@ -855,176 +984,243 @@ func _internal_cancelStoryUpload(account: Account, stableId: Int32) {
 }
 
 private struct PendingStoryIdMappingKey: Hashable {
-    var accountPeerId: PeerId
+    var peerId: PeerId
     var stableId: Int32
 }
 
 private let pendingStoryIdMapping = Atomic<[PendingStoryIdMappingKey: Int32]>(value: [:])
 
-func _internal_lookUpPendingStoryIdMapping(accountPeerId: PeerId, stableId: Int32) -> Int32? {
+func _internal_lookUpPendingStoryIdMapping(peerId: PeerId, stableId: Int32) -> Int32? {
     return pendingStoryIdMapping.with { dict in
-        return dict[PendingStoryIdMappingKey(accountPeerId: accountPeerId, stableId: stableId)]
+        return dict[PendingStoryIdMappingKey(peerId: peerId, stableId: stableId)]
     }
 }
 
-private func _internal_putPendingStoryIdMapping(accountPeerId: PeerId, stableId: Int32, id: Int32) {
+private func _internal_putPendingStoryIdMapping(peerId: PeerId, stableId: Int32, id: Int32) {
     let _ = pendingStoryIdMapping.modify { dict in
         var dict = dict
         
-        dict[PendingStoryIdMappingKey(accountPeerId: accountPeerId, stableId: stableId)] = id
+        dict[PendingStoryIdMappingKey(peerId: peerId, stableId: stableId)] = id
         
         return dict
     }
 }
 
-func _internal_uploadStoryImpl(postbox: Postbox, network: Network, accountPeerId: PeerId, stateManager: AccountStateManager, messageMediaPreuploadManager: MessageMediaPreuploadManager, revalidationContext: MediaReferenceRevalidationContext, auxiliaryMethods: AccountAuxiliaryMethods, stableId: Int32, media: Media, mediaAreas: [MediaArea], text: String, entities: [MessageTextEntity], embeddedStickers: [TelegramMediaFile], pin: Bool, privacy: EngineStoryPrivacy, isForwardingDisabled: Bool, period: Int, randomId: Int64) -> Signal<StoryUploadResult, NoError> {
-    let passFetchProgress = media is TelegramMediaFile
-    let (contentSignal, originalMedia) = uploadedStoryContent(postbox: postbox, network: network, media: media, embeddedStickers: embeddedStickers, accountPeerId: accountPeerId, messageMediaPreuploadManager: messageMediaPreuploadManager, revalidationContext: revalidationContext, auxiliaryMethods: auxiliaryMethods, passFetchProgress: passFetchProgress)
-    return contentSignal
-    |> mapToSignal { result -> Signal<StoryUploadResult, NoError> in
-        switch result {
-        case let .progress(progress):
-            return .single(.progress(progress))
-        case let .content(content):
-            return postbox.transaction { transaction -> Signal<StoryUploadResult, NoError> in
-                let privacyRules = apiInputPrivacyRules(privacy: privacy, transaction: transaction)
-                switch content.content {
-                case let .media(inputMedia, _):
-                    var flags: Int32 = 0
-                    var apiCaption: String?
-                    var apiEntities: [Api.MessageEntity]?
-                    
-                    if pin {
-                        flags |= 1 << 2
-                    }
-                    if !text.isEmpty {
-                        flags |= 1 << 0
-                        apiCaption = text
+func _internal_uploadStoryImpl(
+    postbox: Postbox,
+    network: Network,
+    accountPeerId: PeerId,
+    stateManager: AccountStateManager,
+    messageMediaPreuploadManager: MessageMediaPreuploadManager,
+    revalidationContext: MediaReferenceRevalidationContext,
+    auxiliaryMethods: AccountAuxiliaryMethods,
+    toPeerId: PeerId,
+    stableId: Int32,
+    media: Media,
+    mediaAreas: [MediaArea],
+    text: String,
+    entities: [MessageTextEntity],
+    embeddedStickers: [TelegramMediaFile],
+    pin: Bool,
+    privacy: EngineStoryPrivacy,
+    isForwardingDisabled: Bool,
+    period: Int,
+    randomId: Int64,
+    forwardInfo: Stories.PendingForwardInfo?
+) -> Signal<StoryUploadResult, NoError> {
+    return postbox.transaction { transaction -> (Peer, Peer?)? in
+        if let peer = transaction.getPeer(toPeerId) {
+            if let forwardInfo = forwardInfo {
+                return (peer, transaction.getPeer(forwardInfo.peerId))
+            } else {
+                return (peer, nil)
+            }
+        }
+        return nil
+    }
+    |> mapToSignal { inputPeerAndForwardInfoPeer -> Signal<StoryUploadResult, NoError> in
+        guard let (inputPeer, forwardInfoPeer) = inputPeerAndForwardInfoPeer, let inputPeer = apiInputPeer(inputPeer) else {
+            return .single(.completed(nil))
+        }
+        
+        var mediaReference: AnyMediaReference?
+        if let forwardInfo = forwardInfo, let forwardInfoPeer = forwardInfoPeer.flatMap(PeerReference.init) {
+            mediaReference = .story(peer: forwardInfoPeer, id: forwardInfo.storyId, media: media)
+        }
+        
+        let passFetchProgress = media is TelegramMediaFile
+        let (contentSignal, originalMedia) = uploadedStoryContent(postbox: postbox, network: network, media: media, mediaReference: mediaReference, embeddedStickers: embeddedStickers, accountPeerId: accountPeerId, messageMediaPreuploadManager: messageMediaPreuploadManager, revalidationContext: revalidationContext, auxiliaryMethods: auxiliaryMethods, passFetchProgress: passFetchProgress)
+        return contentSignal
+        |> mapToSignal { result -> Signal<StoryUploadResult, NoError> in
+            switch result {
+            case let .progress(progress):
+                return .single(.progress(progress))
+            case let .content(content):
+                return postbox.transaction { transaction -> Signal<StoryUploadResult, NoError> in
+                    let privacyRules = apiInputPrivacyRules(privacy: privacy, transaction: transaction)
+                    switch content.content {
+                    case let .media(inputMedia, _):
+                        var flags: Int32 = 0
+                        var apiCaption: String?
+                        var apiEntities: [Api.MessageEntity]?
                         
-                        if !entities.isEmpty {
-                            flags |= 1 << 1
-                            
-                            var associatedPeers: [PeerId: Peer] = [:]
-                            for entity in entities {
-                                for entityPeerId in entity.associatedPeerIds {
-                                    if let peer = transaction.getPeer(entityPeerId) {
-                                        associatedPeers[peer.id] = peer
-                                    }
-                                }
-                            }
-                            apiEntities = apiEntitiesFromMessageTextEntities(entities, associatedPeers: SimpleDictionary(associatedPeers))
+                        if pin {
+                            flags |= 1 << 2
                         }
-                    }
-                    
-                    flags |= 1 << 3
-                    
-                    if isForwardingDisabled {
-                        flags |= 1 << 4
-                    }
-                    
-                    let inputMediaAreas: [Api.MediaArea] = apiMediaAreasFromMediaAreas(mediaAreas)
-                    if !inputMediaAreas.isEmpty {
-                        flags |= 1 << 5
-                    }
-                                        
-                    return network.request(Api.functions.stories.sendStory(
-                        flags: flags,
-                        media: inputMedia,
-                        mediaAreas: inputMediaAreas,
-                        caption: apiCaption,
-                        entities: apiEntities,
-                        privacyRules: privacyRules,
-                        randomId: randomId,
-                        period: Int32(period)
-                    ))
-                    |> map(Optional.init)
-                    |> `catch` { _ -> Signal<Api.Updates?, NoError> in
-                        return .single(nil)
-                    }
-                    |> mapToSignal { updates -> Signal<StoryUploadResult, NoError> in
-                        return postbox.transaction { transaction -> StoryUploadResult in
-                            var currentState: Stories.LocalState
-                            if let value = transaction.getLocalStoryState()?.get(Stories.LocalState.self) {
-                                currentState = value
-                            } else {
-                                currentState = Stories.LocalState(items: [])
-                            }
-                            if let index = currentState.items.firstIndex(where: { $0.stableId == stableId }) {
-                                currentState.items.remove(at: index)
-                                transaction.setLocalStoryState(state: CodableEntry(currentState))
-                            }
+                        if !text.isEmpty {
+                            flags |= 1 << 0
+                            apiCaption = text
                             
-                            var id: Int32?
-                            if let updates = updates {
-                                for update in updates.allUpdates {
-                                    if case let .updateStory(_, story) = update {
-                                        switch story {
-                                        case let .storyItem(_, idValue, _, _, _, _, media, _, _, _, _):
-                                            if let parsedStory = Stories.StoredItem(apiStoryItem: story, peerId: accountPeerId, transaction: transaction) {
-                                                var items = transaction.getStoryItems(peerId: accountPeerId)
-                                                var updatedItems: [Stories.Item] = []
-                                                if items.firstIndex(where: { $0.id == id }) == nil, case let .item(item) = parsedStory {
-                                                    let updatedItem = Stories.Item(
-                                                        id: item.id,
-                                                        timestamp: item.timestamp,
-                                                        expirationTimestamp: item.expirationTimestamp,
-                                                        media: item.media,
-                                                        mediaAreas: item.mediaAreas,
-                                                        text: item.text,
-                                                        entities: item.entities,
-                                                        views: item.views,
-                                                        privacy: Stories.Item.Privacy(base: privacy.base, additionallyIncludePeers: privacy.additionallyIncludePeers),
-                                                        isPinned: item.isPinned,
-                                                        isExpired: item.isExpired,
-                                                        isPublic: item.isPublic,
-                                                        isCloseFriends: item.isCloseFriends,
-                                                        isContacts: item.isContacts,
-                                                        isSelectedContacts: item.isSelectedContacts,
-                                                        isForwardingDisabled: item.isForwardingDisabled,
-                                                        isEdited: item.isEdited,
-                                                        myReaction: item.myReaction
-                                                    )
-                                                    if let entry = CodableEntry(Stories.StoredItem.item(updatedItem)) {
-                                                        items.append(StoryItemsTableEntry(value: entry, id: item.id, expirationTimestamp: updatedItem.expirationTimestamp, isCloseFriends: updatedItem.isCloseFriends))
-                                                    }
-                                                    updatedItems.append(updatedItem)
-                                                }
-                                                transaction.setStoryItems(peerId: accountPeerId, items: items)
-                                            }
-                                            
-                                            id = idValue
-                                            let (parsedMedia, _, _, _) = textMediaAndExpirationTimerFromApiMedia(media, accountPeerId)
-                                            if let parsedMedia = parsedMedia {
-                                                applyMediaResourceChanges(from: originalMedia, to: parsedMedia, postbox: postbox, force: originalMedia is TelegramMediaFile && parsedMedia is TelegramMediaFile)
-                                            }
-                                        default:
-                                            break
+                            if !entities.isEmpty {
+                                flags |= 1 << 1
+                                
+                                var associatedPeers: [PeerId: Peer] = [:]
+                                for entity in entities {
+                                    for entityPeerId in entity.associatedPeerIds {
+                                        if let peer = transaction.getPeer(entityPeerId) {
+                                            associatedPeers[peer.id] = peer
                                         }
                                     }
                                 }
-                                
-                                if let id = id {
-                                    _internal_putPendingStoryIdMapping(accountPeerId: accountPeerId, stableId: stableId, id: id)
+                                apiEntities = apiEntitiesFromMessageTextEntities(entities, associatedPeers: SimpleDictionary(associatedPeers))
+                            }
+                        }
+                        
+                        flags |= 1 << 3
+                        
+                        if isForwardingDisabled {
+                            flags |= 1 << 4
+                        }
+                        
+                        let inputMediaAreas: [Api.MediaArea] = apiMediaAreasFromMediaAreas(mediaAreas)
+                        if !inputMediaAreas.isEmpty {
+                            flags |= 1 << 5
+                        }
+                        
+                        var fwdFromId: Api.InputPeer?
+                        var fwdFromStory: Int32?
+                        if let forwardInfo = forwardInfo, let inputPeer = transaction.getPeer(forwardInfo.peerId).flatMap({ apiInputPeer($0) }) {
+                            flags |= 1 << 6
+                            if forwardInfo.isModified {
+                                flags |= 1 << 7
+                            }
+                            fwdFromId = inputPeer
+                            fwdFromStory = forwardInfo.storyId
+                        }
+                        
+                        return network.request(Api.functions.stories.sendStory(
+                            flags: flags,
+                            peer: inputPeer,
+                            media: inputMedia,
+                            mediaAreas: inputMediaAreas,
+                            caption: apiCaption,
+                            entities: apiEntities,
+                            privacyRules: privacyRules,
+                            randomId: randomId,
+                            period: Int32(period),
+                            fwdFromId: fwdFromId,
+                            fwdFromStory: fwdFromStory
+                        ))
+                        |> map(Optional.init)
+                        |> `catch` { _ -> Signal<Api.Updates?, NoError> in
+                            return .single(nil)
+                        }
+                        |> mapToSignal { updates -> Signal<StoryUploadResult, NoError> in
+                            return postbox.transaction { transaction -> StoryUploadResult in
+                                var currentState: Stories.LocalState
+                                if let value = transaction.getLocalStoryState()?.get(Stories.LocalState.self) {
+                                    currentState = value
+                                } else {
+                                    currentState = Stories.LocalState(items: [])
+                                }
+                                if let index = currentState.items.firstIndex(where: { $0.stableId == stableId }) {
+                                    currentState.items.remove(at: index)
+                                    transaction.setLocalStoryState(state: CodableEntry(currentState))
                                 }
                                 
-                                stateManager.addUpdates(updates)
+                                var id: Int32?
+                                if let updates = updates {
+                                    for update in updates.allUpdates {
+                                        if case let .updateStory(_, story) = update {
+                                            switch story {
+                                            case let .storyItem(_, idValue, _, _, _, _, _, media, _, _, _, _):
+                                                if let parsedStory = Stories.StoredItem(apiStoryItem: story, peerId: toPeerId, transaction: transaction) {
+                                                    var items = transaction.getStoryItems(peerId: toPeerId)
+                                                    var updatedItems: [Stories.Item] = []
+                                                    if items.firstIndex(where: { $0.id == id }) == nil, case let .item(item) = parsedStory {
+                                                        let updatedItem = Stories.Item(
+                                                            id: item.id,
+                                                            timestamp: item.timestamp,
+                                                            expirationTimestamp: item.expirationTimestamp,
+                                                            media: item.media,
+                                                            mediaAreas: item.mediaAreas,
+                                                            text: item.text,
+                                                            entities: item.entities,
+                                                            views: item.views,
+                                                            privacy: Stories.Item.Privacy(base: privacy.base, additionallyIncludePeers: privacy.additionallyIncludePeers),
+                                                            isPinned: item.isPinned,
+                                                            isExpired: item.isExpired,
+                                                            isPublic: item.isPublic,
+                                                            isCloseFriends: item.isCloseFriends,
+                                                            isContacts: item.isContacts,
+                                                            isSelectedContacts: item.isSelectedContacts,
+                                                            isForwardingDisabled: item.isForwardingDisabled,
+                                                            isEdited: item.isEdited,
+                                                            isMy: item.isMy,
+                                                            myReaction: item.myReaction,
+                                                            forwardInfo: item.forwardInfo
+                                                        )
+                                                        if let entry = CodableEntry(Stories.StoredItem.item(updatedItem)) {
+                                                            items.append(StoryItemsTableEntry(value: entry, id: item.id, expirationTimestamp: updatedItem.expirationTimestamp, isCloseFriends: updatedItem.isCloseFriends))
+                                                        }
+                                                        updatedItems.append(updatedItem)
+                                                    }
+                                                    transaction.setStoryItems(peerId: toPeerId, items: items)
+                                                    
+                                                    if let peer = transaction.getPeer(toPeerId) as? TelegramChannel, let storiesHidden = peer.storiesHidden {
+                                                        let subscriptionsKey: PostboxStorySubscriptionsKey = storiesHidden ? .hidden : .filtered
+                                                        var (state, peerIds) = transaction.getAllStorySubscriptions(key: subscriptionsKey)
+                                                        if !peerIds.contains(toPeerId) {
+                                                            peerIds.append(toPeerId)
+                                                        }
+                                                        transaction.replaceAllStorySubscriptions(key: subscriptionsKey, state: state, peerIds: peerIds)
+                                                    }
+                                                }
+                                                
+                                                id = idValue
+                                                let (parsedMedia, _, _, _, _) = textMediaAndExpirationTimerFromApiMedia(media, toPeerId)
+                                                if let parsedMedia = parsedMedia {
+                                                    applyMediaResourceChanges(from: originalMedia, to: parsedMedia, postbox: postbox, force: originalMedia is TelegramMediaFile && parsedMedia is TelegramMediaFile)
+                                                }
+                                            default:
+                                                break
+                                            }
+                                        }
+                                    }
+                                    
+                                    if let id = id {
+                                        _internal_putPendingStoryIdMapping(peerId: toPeerId, stableId: stableId, id: id)
+                                    }
+                                    
+                                    stateManager.addUpdates(updates)
+                                }
+                                
+                                return .completed(id)
                             }
-                            
-                            return .completed(id)
                         }
+                    default:
+                        return .complete()
                     }
-                default:
-                    return .complete()
                 }
+                |> switchToLatest
+            default:
+                return .complete()
             }
-            |> switchToLatest
-        default:
-            return .complete()
         }
     }
 }
 
-func _internal_editStory(account: Account, id: Int32, media: EngineStoryInputMedia?, mediaAreas: [MediaArea]?, text: String?, entities: [MessageTextEntity]?, privacy: EngineStoryPrivacy?) -> Signal<StoryUploadResult, NoError> {
+func _internal_editStory(account: Account, peerId: PeerId, id: Int32, media: EngineStoryInputMedia?, mediaAreas: [MediaArea]?, text: String?, entities: [MessageTextEntity]?, privacy: EngineStoryPrivacy?) -> Signal<StoryUploadResult, NoError> {
     let contentSignal: Signal<PendingMessageUploadedContentResult?, NoError>
     let originalMedia: Media?
     if let media = media {
@@ -1032,7 +1228,7 @@ func _internal_editStory(account: Account, id: Int32, media: EngineStoryInputMed
         if case .video = media {
             passFetchProgress = true
         }
-        (contentSignal, originalMedia) = uploadedStoryContent(postbox: account.postbox, network: account.network, media: prepareUploadStoryContent(account: account, media: media), embeddedStickers: media.embeddedStickers, accountPeerId: account.peerId, messageMediaPreuploadManager: account.messageMediaPreuploadManager, revalidationContext: account.mediaReferenceRevalidationContext, auxiliaryMethods: account.auxiliaryMethods, passFetchProgress: passFetchProgress)
+        (contentSignal, originalMedia) = uploadedStoryContent(postbox: account.postbox, network: account.network, media: prepareUploadStoryContent(account: account, media: media), mediaReference: nil, embeddedStickers: media.embeddedStickers, accountPeerId: account.peerId, messageMediaPreuploadManager: account.messageMediaPreuploadManager, revalidationContext: account.mediaReferenceRevalidationContext, auxiliaryMethods: account.auxiliaryMethods, passFetchProgress: passFetchProgress)
     } else {
         contentSignal = .single(nil)
         originalMedia = nil
@@ -1052,6 +1248,10 @@ func _internal_editStory(account: Account, id: Int32, media: EngineStoryInputMed
         }
         
         return account.postbox.transaction { transaction -> Signal<StoryUploadResult, NoError> in
+            guard let inputPeer = transaction.getPeer(peerId).flatMap(apiInputPeer) else {
+                return .single(.completed(nil))
+            }
+            
             var flags: Int32 = 0
             var apiCaption: String?
             var apiEntities: [Api.MessageEntity]?
@@ -1088,6 +1288,7 @@ func _internal_editStory(account: Account, id: Int32, media: EngineStoryInputMed
             
             return account.network.request(Api.functions.stories.editStory(
                 flags: flags,
+                peer: inputPeer,
                 id: id,
                 media: inputMedia,
                 mediaAreas: inputMediaAreas,
@@ -1104,8 +1305,8 @@ func _internal_editStory(account: Account, id: Int32, media: EngineStoryInputMed
                     for update in updates.allUpdates {
                         if case let .updateStory(_, story) = update {
                             switch story {
-                            case let .storyItem(_, _, _, _, _, _, media, _, _, _, _):
-                                let (parsedMedia, _, _, _) = textMediaAndExpirationTimerFromApiMedia(media, account.peerId)
+                            case let .storyItem(_, _, _, _, _, _, _, media, _, _, _, _):
+                                let (parsedMedia, _, _, _, _) = textMediaAndExpirationTimerFromApiMedia(media, account.peerId)
                                 if let parsedMedia = parsedMedia, let originalMedia = originalMedia {
                                     applyMediaResourceChanges(from: originalMedia, to: parsedMedia, postbox: account.postbox, force: false)
                                 }
@@ -1146,7 +1347,9 @@ func _internal_editStoryPrivacy(account: Account, id: Int32, privacy: EngineStor
                 isSelectedContacts: item.isSelectedContacts,
                 isForwardingDisabled: item.isForwardingDisabled,
                 isEdited: item.isEdited,
-                myReaction: item.myReaction
+                isMy: item.isMy,
+                myReaction: item.myReaction,
+                forwardInfo: item.forwardInfo
             )
             if let entry = CodableEntry(Stories.StoredItem.item(updatedItem)) {
                 transaction.setStory(id: storyId, value: entry)
@@ -1174,7 +1377,9 @@ func _internal_editStoryPrivacy(account: Account, id: Int32, privacy: EngineStor
                 isSelectedContacts: item.isSelectedContacts,
                 isForwardingDisabled: item.isForwardingDisabled,
                 isEdited: item.isEdited,
-                myReaction: item.myReaction
+                isMy: item.isMy,
+                myReaction: item.myReaction,
+                forwardInfo: item.forwardInfo
             )
             if let entry = CodableEntry(Stories.StoredItem.item(updatedItem)) {
                 items[index] = StoryItemsTableEntry(value: entry, id: item.id, expirationTimestamp: updatedItem.expirationTimestamp, isCloseFriends: updatedItem.isCloseFriends)
@@ -1190,7 +1395,7 @@ func _internal_editStoryPrivacy(account: Account, id: Int32, privacy: EngineStor
         var flags: Int32 = 0
         flags |= 1 << 2
         
-        return account.network.request(Api.functions.stories.editStory(flags: flags, id: id, media: nil, mediaAreas: nil, caption: nil, entities: nil, privacyRules: inputRules))
+        return account.network.request(Api.functions.stories.editStory(flags: flags, peer: .inputPeerSelf, id: id, media: nil, mediaAreas: nil, caption: nil, entities: nil, privacyRules: inputRules))
         |> map(Optional.init)
         |> `catch` { _ -> Signal<Api.Updates?, NoError> in
             return .single(nil)
@@ -1212,34 +1417,55 @@ public enum StoriesUploadAvailability {
     case expiringLimit
     case premiumRequired
     case unknownLimit
+    case channelBoostRequired
 }
 
-func _internal_checkStoriesUploadAvailability(account: Account) -> Signal<StoriesUploadAvailability, NoError> {
-    return account.network.request(Api.functions.stories.canSendStory())
-    |> map { result -> StoriesUploadAvailability in
-        if result == .boolTrue {
-            return .available
-        } else {
-            return .unknownLimit
+func _internal_checkStoriesUploadAvailability(account: Account, target: Stories.PendingTarget) -> Signal<StoriesUploadAvailability, NoError> {
+    return account.postbox.transaction { transaction -> Api.InputPeer? in
+        switch target {
+        case .myStories:
+            return .inputPeerSelf
+        case let .peer(peerId):
+            return transaction.getPeer(peerId).flatMap(apiInputPeer)
         }
     }
-    |> `catch` { error -> Signal<StoriesUploadAvailability, NoError> in
-        if error.errorDescription.hasPrefix("STORY_SEND_FLOOD_WEEKLY_") {
-            return .single(.weeklyLimit)
-        } else if error.errorDescription.hasPrefix("STORY_SEND_FLOOD_MONTHLY_") {
-            return .single(.monthlyLimit)
-        } else if error.errorDescription.hasPrefix("PREMIUM_ACCOUNT_REQUIRED") {
-            return .single(.premiumRequired)
-        } else if error.errorDescription.hasPrefix("STORIES_TOO_MUCH") {
-            return .single(.expiringLimit)
+    |> mapToSignal { inputPeer -> Signal<StoriesUploadAvailability, NoError> in
+        guard let inputPeer = inputPeer else {
+            return .single(.unknownLimit)
         }
-        return .single(.unknownLimit)
+        
+        return account.network.request(Api.functions.stories.canSendStory(peer: inputPeer))
+        |> map { result -> StoriesUploadAvailability in
+            if result == .boolTrue {
+                return .available
+            } else {
+                return .unknownLimit
+            }
+        }
+        |> `catch` { error -> Signal<StoriesUploadAvailability, NoError> in
+            if error.errorDescription.hasPrefix("STORY_SEND_FLOOD_WEEKLY_") {
+                return .single(.weeklyLimit)
+            } else if error.errorDescription.hasPrefix("STORY_SEND_FLOOD_MONTHLY_") {
+                return .single(.monthlyLimit)
+            } else if error.errorDescription.hasPrefix("PREMIUM_ACCOUNT_REQUIRED") {
+                return .single(.premiumRequired)
+            } else if error.errorDescription.hasPrefix("STORIES_TOO_MUCH") {
+                return .single(.expiringLimit)
+            } else if error.errorDescription.hasPrefix("BOOSTS_REQUIRED") {
+                return .single(.channelBoostRequired)
+            }
+            return .single(.unknownLimit)
+        }
     }
 }
 
-func _internal_deleteStories(account: Account, ids: [Int32]) -> Signal<Never, NoError> {
-    return account.postbox.transaction { transaction -> Void in
-        var items = transaction.getStoryItems(peerId: account.peerId)
+func _internal_deleteStories(account: Account, peerId: PeerId, ids: [Int32]) -> Signal<Never, NoError> {
+    return account.postbox.transaction { transaction -> Api.InputPeer? in
+        guard let inputPeer = transaction.getPeer(peerId).flatMap(apiInputPeer) else {
+            return nil
+        }
+        
+        var items = transaction.getStoryItems(peerId: peerId)
         var updated = false
         for id in ids {
             if let index = items.firstIndex(where: { $0.id == id }) {
@@ -1248,14 +1474,20 @@ func _internal_deleteStories(account: Account, ids: [Int32]) -> Signal<Never, No
             }
         }
         if updated {
-            transaction.setStoryItems(peerId: account.peerId, items: items)
+            transaction.setStoryItems(peerId: peerId, items: items)
         }
         account.stateManager.injectStoryUpdates(updates: ids.map { id in
-            return .deleted(peerId: account.peerId, id: id)
+            return .deleted(peerId: peerId, id: id)
         })
+        
+        return inputPeer
     }
-    |> mapToSignal { _ -> Signal<Never, NoError> in
-        return account.network.request(Api.functions.stories.deleteStories(id: ids))
+    |> mapToSignal { inputPeer -> Signal<Never, NoError> in
+        guard let inputPeer = inputPeer else {
+            return .complete()
+        }
+        
+        return account.network.request(Api.functions.stories.deleteStories(peer: inputPeer, id: ids))
         |> `catch` { _ -> Signal<[Int32], NoError> in
             return .single([])
         }
@@ -1267,11 +1499,11 @@ func _internal_deleteStories(account: Account, ids: [Int32]) -> Signal<Never, No
 
 func _internal_markStoryAsSeen(account: Account, peerId: PeerId, id: Int32, asPinned: Bool) -> Signal<Never, NoError> {
     if asPinned {
-        return account.postbox.transaction { transaction -> Api.InputUser? in
-            return transaction.getPeer(peerId).flatMap(apiInputUser)
+        return account.postbox.transaction { transaction -> Api.InputPeer? in
+            return transaction.getPeer(peerId).flatMap(apiInputPeer)
         }
-        |> mapToSignal { inputUser -> Signal<Never, NoError> in
-            guard let inputUser = inputUser else {
+        |> mapToSignal { inputPeer -> Signal<Never, NoError> in
+            guard let inputPeer = inputPeer else {
                 return .complete()
             }
             
@@ -1281,7 +1513,7 @@ func _internal_markStoryAsSeen(account: Account, peerId: PeerId, id: Int32, asPi
             }
             #endif
             
-            return account.network.request(Api.functions.stories.incrementStoryViews(userId: inputUser, id: [id]))
+            return account.network.request(Api.functions.stories.incrementStoryViews(peer: inputPeer, id: [id]))
             |> `catch` { _ -> Signal<Api.Bool, NoError> in
                 return .single(.boolFalse)
             }
@@ -1310,9 +1542,13 @@ func _internal_markStoryAsSeen(account: Account, peerId: PeerId, id: Int32, asPi
     }
 }
 
-func _internal_updateStoriesArePinned(account: Account, ids: [Int32: EngineStoryItem], isPinned: Bool) -> Signal<Never, NoError> {
-    return account.postbox.transaction { transaction -> Void in
-        var items = transaction.getStoryItems(peerId: account.peerId)
+func _internal_updateStoriesArePinned(account: Account, peerId: PeerId, ids: [Int32: EngineStoryItem], isPinned: Bool) -> Signal<Never, NoError> {
+    return account.postbox.transaction { transaction -> Api.InputPeer? in
+        guard let inputPeer = transaction.getPeer(peerId).flatMap(apiInputPeer) else {
+            return nil
+        }
+        
+        var items = transaction.getStoryItems(peerId: peerId)
         var updatedItems: [Stories.Item] = []
         for (id, referenceItem) in ids {
             if let index = items.firstIndex(where: { $0.id == id }), case let .item(item) = items[index].value.get(Stories.StoredItem.self) {
@@ -1334,7 +1570,9 @@ func _internal_updateStoriesArePinned(account: Account, ids: [Int32: EngineStory
                     isSelectedContacts: item.isSelectedContacts,
                     isForwardingDisabled: item.isForwardingDisabled,
                     isEdited: item.isEdited,
-                    myReaction: item.myReaction
+                    isMy: item.isMy,
+                    myReaction: item.myReaction,
+                    forwardInfo: item.forwardInfo
                 )
                 if let entry = CodableEntry(Stories.StoredItem.item(updatedItem)) {
                     items[index] = StoryItemsTableEntry(value: entry, id: item.id, expirationTimestamp: updatedItem.expirationTimestamp, isCloseFriends: updatedItem.isCloseFriends)
@@ -1361,22 +1599,30 @@ func _internal_updateStoriesArePinned(account: Account, ids: [Int32: EngineStory
                     isSelectedContacts: item.isSelectedContacts,
                     isForwardingDisabled: item.isForwardingDisabled,
                     isEdited: item.isEdited,
-                    myReaction: item.myReaction
+                    isMy: item.isMy,
+                    myReaction: item.myReaction,
+                    forwardInfo: item.forwardInfo
                 )
                 updatedItems.append(updatedItem)
             }
         }
-        transaction.setStoryItems(peerId: account.peerId, items: items)
+        transaction.setStoryItems(peerId: peerId, items: items)
         if !updatedItems.isEmpty {
             DispatchQueue.main.async {
                 account.stateManager.injectStoryUpdates(updates: updatedItems.map { updatedItem in
-                    return .added(peerId: account.peerId, item: Stories.StoredItem.item(updatedItem))
+                    return .added(peerId: peerId, item: Stories.StoredItem.item(updatedItem))
                 })
             }
         }
+        
+        return inputPeer
     }
-    |> mapToSignal { _ -> Signal<Never, NoError> in
-        return account.network.request(Api.functions.stories.togglePinned(id: ids.keys.sorted(), pinned: isPinned ? .boolTrue : .boolFalse))
+    |> mapToSignal { inputPeer -> Signal<Never, NoError> in
+        guard let inputPeer = inputPeer else {
+            return .complete()
+        }
+        
+        return account.network.request(Api.functions.stories.togglePinned(peer: inputPeer, id: ids.keys.sorted(), pinned: isPinned ? .boolTrue : .boolFalse))
         |> `catch` { _ -> Signal<[Int32], NoError> in
             return .single([])
         }
@@ -1387,7 +1633,7 @@ func _internal_updateStoriesArePinned(account: Account, ids: [Int32: EngineStory
 extension Api.StoryItem {
     var id: Int32 {
         switch self {
-        case let .storyItem(_, id, _, _, _, _, _, _, _, _, _):
+        case let .storyItem(_, id, _, _, _, _, _, _, _, _, _, _):
             return id
         case let .storyItemDeleted(id):
             return id
@@ -1400,22 +1646,58 @@ extension Api.StoryItem {
 extension Stories.Item.Views {
     init(apiViews: Api.StoryViews) {
         switch apiViews {
-        case let .storyViews(flags, viewsCount, reactionsCount, recentViewers):
+        case let .storyViews(flags, viewsCount, forwardsCount, reactions, reactionsCount, recentViewers):
+            //storyViews#8d595cd6 flags:# has_viewers:flags.1?true views_count:int forwards_count:flags.2?int reactions:flags.3?Vector<ReactionCount> reactions_count:flags.4?int recent_viewers:flags.0?Vector<long> = StoryViews;
             let hasList = (flags & (1 << 1)) != 0
             var seenPeerIds: [PeerId] = []
             if let recentViewers = recentViewers {
                 seenPeerIds = recentViewers.map { PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value($0)) }
             }
-            self.init(seenCount: Int(viewsCount), reactedCount: Int(reactionsCount), seenPeerIds: seenPeerIds, hasList: hasList)
+            var mappedReactions: [MessageReaction] = []
+            if let reactions = reactions {
+                for result in reactions {
+                    switch result {
+                    case let .reactionCount(_, chosenOrder, reaction, count):
+                        if let reaction = MessageReaction.Reaction(apiReaction: reaction) {
+                            mappedReactions.append(MessageReaction(value: reaction, count: count, chosenOrder: chosenOrder.flatMap(Int.init)))
+                        }
+                    }
+                }
+            }
+            self.init(
+                seenCount: Int(viewsCount),
+                reactedCount: Int(reactionsCount ?? 0),
+                forwardCount: Int(forwardsCount ?? 0),
+                seenPeerIds: seenPeerIds,
+                reactions: mappedReactions,
+                hasList: hasList
+            )
         }
+    }
+}
+
+extension Stories.Item.ForwardInfo {
+    init?(apiForwardInfo: Api.StoryFwdHeader) {
+        switch apiForwardInfo {
+        case let .storyFwdHeader(flags, from, fromName, storyId):
+            let isModified = (flags & (1 << 3)) != 0
+            if let from = from, let storyId = storyId {
+                self = .known(peerId: from.peerId, storyId: storyId, isModified: isModified)
+                return
+            } else if let fromName = fromName {
+                self = .unknown(name: fromName, isModified: isModified)
+                return
+            }
+        }
+        return nil
     }
 }
 
 extension Stories.StoredItem {
     init?(apiStoryItem: Api.StoryItem, existingItem: Stories.Item? = nil, peerId: PeerId, transaction: Transaction) {
         switch apiStoryItem {
-        case let .storyItem(flags, id, date, expireDate, caption, entities, media, mediaAreas, privacy, views, sentReaction):
-            let (parsedMedia, _, _, _) = textMediaAndExpirationTimerFromApiMedia(media, peerId)
+        case let .storyItem(flags, id, date, forwardFrom, expireDate, caption, entities, media, mediaAreas, privacy, views, sentReaction):
+            let (parsedMedia, _, _, _, _) = textMediaAndExpirationTimerFromApiMedia(media, peerId)
             if let parsedMedia = parsedMedia {
                 var parsedPrivacy: Stories.Item.Privacy?
                 if let privacy = privacy {
@@ -1478,6 +1760,20 @@ extension Stories.StoredItem {
                     mergedMyReaction = sentReaction.flatMap(MessageReaction.Reaction.init(apiReaction:))
                 }
                 
+                var mergedIsMy: Bool
+                if isMin, let existingItem = existingItem {
+                    mergedIsMy = existingItem.isMy
+                } else {
+                    mergedIsMy = (flags & (1 << 16)) != 0
+                }
+                
+                var mergedForwardInfo: Stories.Item.ForwardInfo?
+                if isMin, let existingItem = existingItem {
+                    mergedForwardInfo = existingItem.forwardInfo
+                } else {
+                    mergedForwardInfo = forwardFrom.flatMap(Stories.Item.ForwardInfo.init(apiForwardInfo:))
+                }
+                
                 let item = Stories.Item(
                     id: id,
                     timestamp: date,
@@ -1496,7 +1792,9 @@ extension Stories.StoredItem {
                     isSelectedContacts: isSelectedContacts,
                     isForwardingDisabled: isForwardingDisabled,
                     isEdited: isEdited,
-                    myReaction: mergedMyReaction
+                    isMy: mergedIsMy,
+                    myReaction: mergedMyReaction,
+                    forwardInfo: mergedForwardInfo
                 )
                 self = .item(item)
             } else {
@@ -1511,12 +1809,81 @@ extension Stories.StoredItem {
     }
 }
 
-func _internal_getStoriesById(accountPeerId: PeerId, postbox: Postbox, network: Network, peer: PeerReference, ids: [Int32]) -> Signal<[Stories.StoredItem], NoError> {
-    guard let inputUser = peer.inputUser else {
-        return .single([])
+func _internal_getStoryById(accountPeerId: PeerId, postbox: Postbox, network: Network, peerId: EnginePeer.Id, id: Int32) -> Signal<EngineStoryItem?, NoError> {
+    let storyId = StoryId(peerId: peerId, id: id)
+    return postbox.transaction { transaction -> Peer? in
+        return transaction.getPeer(peerId)
     }
+    |> mapToSignal { peer -> Signal<EngineStoryItem?, NoError> in
+        guard let inputPeer = peer.flatMap(apiInputPeer) else {
+            return .single(nil)
+        }
+        return network.request(Api.functions.stories.getStoriesByID(peer: inputPeer, id: [id]))
+        |> map(Optional.init)
+        |> `catch` { _ -> Signal<Api.stories.Stories?, NoError> in
+            return .single(nil)
+        }
+        |> mapToSignal { result -> Signal<EngineStoryItem?, NoError> in
+            guard let result = result else {
+                return .single(nil)
+            }
+            return postbox.transaction { transaction -> EngineStoryItem? in
+                switch result {
+                case let .stories(_, stories, chats, users):
+                    updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: AccumulatedPeers(transaction: transaction, chats: chats, users: users))
+                    
+                    if let storyItem = stories.first.flatMap({ Stories.StoredItem(apiStoryItem: $0, peerId: peerId, transaction: transaction) }) {
+                        if let entry = CodableEntry(storyItem) {
+                            transaction.setStory(id: storyId, value: entry)
+                        }
+                        if case let .item(item) = storyItem, let media = item.media {
+                            return EngineStoryItem(
+                                id: item.id,
+                                timestamp: item.timestamp,
+                                expirationTimestamp: item.expirationTimestamp,
+                                media: EngineMedia(media),
+                                mediaAreas: item.mediaAreas,
+                                text: item.text,
+                                entities: item.entities,
+                                views: item.views.flatMap { views in
+                                    return EngineStoryItem.Views(
+                                        seenCount: views.seenCount,
+                                        reactedCount: views.reactedCount,
+                                        forwardCount: views.forwardCount,
+                                        seenPeers: views.seenPeerIds.compactMap { id -> EnginePeer? in
+                                            return transaction.getPeer(id).flatMap(EnginePeer.init)
+                                        },
+                                        reactions: views.reactions,
+                                        hasList: views.hasList
+                                    )
+                                },
+                                privacy: item.privacy.flatMap(EngineStoryPrivacy.init),
+                                isPinned: item.isPinned,
+                                isExpired: item.isExpired,
+                                isPublic: item.isPublic,
+                                isPending: false,
+                                isCloseFriends: item.isCloseFriends,
+                                isContacts: item.isContacts,
+                                isSelectedContacts: item.isSelectedContacts,
+                                isForwardingDisabled: item.isForwardingDisabled,
+                                isEdited: item.isEdited,
+                                isMy: item.isMy,
+                                myReaction: item.myReaction,
+                                forwardInfo: item.forwardInfo.flatMap { EngineStoryItem.ForwardInfo($0, transaction: transaction) }
+                            )
+                        }
+                    }
+                    return nil
+                }
+            }
+        }
+    }
+}
+
+func _internal_getStoriesById(accountPeerId: PeerId, postbox: Postbox, network: Network, peer: PeerReference, ids: [Int32]) -> Signal<[Stories.StoredItem], NoError> {
+    let inputPeer = peer.inputPeer
     
-    return network.request(Api.functions.stories.getStoriesByID(userId: inputUser, id: ids))
+    return network.request(Api.functions.stories.getStoriesByID(peer: inputPeer, id: ids))
     |> map(Optional.init)
     |> `catch` { _ -> Signal<Api.stories.Stories?, NoError> in
         return .single(nil)
@@ -1527,8 +1894,8 @@ func _internal_getStoriesById(accountPeerId: PeerId, postbox: Postbox, network: 
         }
         return postbox.transaction { transaction -> [Stories.StoredItem] in
             switch result {
-            case let .stories(_, stories, users):
-                updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: AccumulatedPeers(users: users))
+            case let .stories(_, stories, chats, users):
+                updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: AccumulatedPeers(transaction: transaction, chats: chats, users: users))
                 
                 return stories.compactMap { apiStoryItem -> Stories.StoredItem? in
                     return Stories.StoredItem(apiStoryItem: apiStoryItem, peerId: peer.id, transaction: transaction)
@@ -1539,15 +1906,15 @@ func _internal_getStoriesById(accountPeerId: PeerId, postbox: Postbox, network: 
 }
 
 func _internal_getStoriesById(accountPeerId: PeerId, postbox: Postbox, source: FetchMessageHistoryHoleSource, peerId: PeerId, peerReference: PeerReference?, ids: [Int32], allowFloodWait: Bool) -> Signal<[Stories.StoredItem]?, NoError> {
-    return postbox.transaction { transaction -> Api.InputUser? in
-        return transaction.getPeer(peerId).flatMap(apiInputUser)
+    return postbox.transaction { transaction -> Api.InputPeer? in
+        return transaction.getPeer(peerId).flatMap(apiInputPeer)
     }
-    |> mapToSignal { inputUser -> Signal<[Stories.StoredItem]?, NoError> in
-        guard let inputUser = inputUser ?? peerReference?.inputUser else {
+    |> mapToSignal { inputPeer -> Signal<[Stories.StoredItem]?, NoError> in
+        guard let inputPeer = inputPeer ?? peerReference?.inputPeer else {
             return .single([])
         }
         
-        return source.request(Api.functions.stories.getStoriesByID(userId: inputUser, id: ids), automaticFloodWait: allowFloodWait)
+        return source.request(Api.functions.stories.getStoriesByID(peer: inputPeer, id: ids), automaticFloodWait: allowFloodWait)
         |> map(Optional.init)
         |> `catch` { _ -> Signal<Api.stories.Stories?, NoError> in
             return .single(nil)
@@ -1558,8 +1925,8 @@ func _internal_getStoriesById(accountPeerId: PeerId, postbox: Postbox, source: F
             }
             return postbox.transaction { transaction -> [Stories.StoredItem]? in
                 switch result {
-                case let .stories(_, stories, users):
-                    updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: AccumulatedPeers(users: users))
+                case let .stories(_, stories, chats, users):
+                    updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: AccumulatedPeers(transaction: transaction, chats: chats, users: users))
                     
                     return stories.compactMap { apiStoryItem -> Stories.StoredItem? in
                         return Stories.StoredItem(apiStoryItem: apiStoryItem, peerId: peerId, transaction: transaction)
@@ -1592,53 +1959,66 @@ public final class StoryViewList {
     }
 }
 
-func _internal_getStoryViews(account: Account, ids: [Int32]) -> Signal<[Int32: Stories.Item.Views], NoError> {
-    let accountPeerId = account.peerId
-    return account.network.request(Api.functions.stories.getStoriesViews(id: ids))
-    |> map(Optional.init)
-    |> `catch` { _ -> Signal<Api.stories.StoryViews?, NoError> in
-        return .single(nil)
+func _internal_getStoryViews(account: Account, peerId: PeerId, ids: [Int32]) -> Signal<[Int32: Stories.Item.Views], NoError> {
+    return account.postbox.transaction { transaction -> Api.InputPeer? in
+        return transaction.getPeer(peerId).flatMap(apiInputPeer)
     }
-    |> mapToSignal { result -> Signal<[Int32: Stories.Item.Views], NoError> in
-        guard let result = result else {
+    |> mapToSignal { inputPeer -> Signal<[Int32: Stories.Item.Views], NoError> in
+        guard let inputPeer = inputPeer else {
             return .single([:])
         }
-        return account.postbox.transaction { transaction -> [Int32: Stories.Item.Views] in
-            var parsedViews: [Int32: Stories.Item.Views] = [:]
-            switch result {
-            case let .storyViews(views, users):
-                updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: AccumulatedPeers(users: users))
-                
-                for i in 0 ..< views.count {
-                    if i < ids.count {
-                        parsedViews[ids[i]] = Stories.Item.Views(apiViews: views[i])
+        
+        let accountPeerId = account.peerId
+        return account.network.request(Api.functions.stories.getStoriesViews(peer: inputPeer, id: ids))
+        |> map(Optional.init)
+        |> `catch` { _ -> Signal<Api.stories.StoryViews?, NoError> in
+            return .single(nil)
+        }
+        |> mapToSignal { result -> Signal<[Int32: Stories.Item.Views], NoError> in
+            guard let result = result else {
+                return .single([:])
+            }
+            return account.postbox.transaction { transaction -> [Int32: Stories.Item.Views] in
+                var parsedViews: [Int32: Stories.Item.Views] = [:]
+                switch result {
+                case let .storyViews(views, users):
+                    updatePeers(transaction: transaction, accountPeerId: accountPeerId, peers: AccumulatedPeers(users: users))
+                    
+                    for i in 0 ..< views.count {
+                        if i < ids.count {
+                            parsedViews[ids[i]] = Stories.Item.Views(apiViews: views[i])
+                        }
                     }
                 }
+                
+                return parsedViews
             }
-            
-            return parsedViews
         }
     }
 }
 
 func _internal_updatePeerStoriesHidden(account: Account, id: PeerId, isHidden: Bool) -> Signal<Never, NoError> {
-    return account.postbox.transaction { transaction -> Api.InputUser? in
+    return account.postbox.transaction { transaction -> Api.InputPeer? in
         guard let peer = transaction.getPeer(id) else {
             return nil
         }
-        guard let user = peer as? TelegramUser else {
-            return nil
+        if let user = peer as? TelegramUser {
+            updatePeersCustom(transaction: transaction, peers: [user.withUpdatedStoriesHidden(isHidden)], update: { _, updated in
+                return updated
+            })
+        } else if let channel = peer as? TelegramChannel {
+            updatePeersCustom(transaction: transaction, peers: [channel.withUpdatedStoriesHidden(isHidden)], update: { _, updated in
+                return updated
+            })
         }
-        updatePeersCustom(transaction: transaction, peers: [user.withUpdatedStoriesHidden(isHidden)], update: { _, updated in
-            return updated
-        })
-        return apiInputUser(peer)
+        
+        return apiInputPeer(peer)
     }
-    |> mapToSignal { inputUser -> Signal<Never, NoError> in
-        guard let inputUser = inputUser else {
+    |> mapToSignal { inputPeer -> Signal<Never, NoError> in
+        guard let inputPeer = inputPeer else {
             return .complete()
         }
-        return account.network.request(Api.functions.contacts.toggleStoriesHidden(id: inputUser, hidden: isHidden ? .boolTrue : .boolFalse))
+        return account.network.request(Api.functions.stories.togglePeerStoriesHidden(peer: inputPeer, hidden: isHidden ? .boolTrue : .boolFalse))
         |> `catch` { _ -> Signal<Api.Bool, NoError> in
             return .single(.boolFalse)
         }
@@ -1647,14 +2027,14 @@ func _internal_updatePeerStoriesHidden(account: Account, id: PeerId, isHidden: B
 }
 
 func _internal_exportStoryLink(account: Account, peerId: EnginePeer.Id, id: Int32) -> Signal<String?, NoError> {
-    return account.postbox.transaction { transaction -> Api.InputUser? in
-        return transaction.getPeer(peerId).flatMap(apiInputUser)
+    return account.postbox.transaction { transaction -> Api.InputPeer? in
+        return transaction.getPeer(peerId).flatMap(apiInputPeer)
     }
-    |> mapToSignal { inputUser -> Signal<String?, NoError> in
-        guard let inputUser = inputUser else {
+    |> mapToSignal { inputPeer -> Signal<String?, NoError> in
+        guard let inputPeer = inputPeer else {
             return .single(nil)
         }
-        return account.network.request(Api.functions.stories.exportStoryLink(userId: inputUser, id: id))
+        return account.network.request(Api.functions.stories.exportStoryLink(peer: inputPeer, id: id))
         |> map(Optional.init)
         |> `catch` { _ -> Signal<Api.ExportedStoryLink?, NoError> in
             return .single(nil)
@@ -1710,7 +2090,7 @@ func _internal_refreshStories(account: Account, peerId: PeerId, ids: [Int32]) ->
 }
 
 func _internal_refreshSeenStories(postbox: Postbox, network: Network) -> Signal<Never, NoError> {
-    return network.request(Api.functions.stories.getAllReadUserStories())
+    return network.request(Api.functions.stories.getAllReadPeerStories())
     |> map(Optional.init)
     |> `catch` { _ -> Signal<Api.Updates?, NoError> in
         return .single(nil)
@@ -1722,8 +2102,8 @@ func _internal_refreshSeenStories(postbox: Postbox, network: Network) -> Signal<
         return postbox.transaction { transaction -> Void in
             for update in updates.allUpdates {
                 switch update {
-                case let .updateReadStories(userId, maxId):
-                    let peerId = PeerId(namespace: Namespaces.Peer.CloudUser, id: PeerId.Id._internalFromInt64Value(userId))
+                case let .updateReadStories(peerIdValue, maxId):
+                    let peerId = peerIdValue.peerId
                     var update = false
                     if let value = transaction.getPeerStoryState(peerId: peerId) {
                         update = value.maxSeenId < maxId
@@ -1849,13 +2229,89 @@ public func _internal_setStoryNotificationWasDisplayed(transaction: Transaction,
     transaction.putItemCacheEntry(id: ItemCacheEntryId(collectionId: Namespaces.CachedItemCollection.displayedStoryNotifications, key: key), entry: CodableEntry(data: Data()))
 }
 
-func _internal_setStoryReaction(account: Account, peerId: EnginePeer.Id, id: Int32, reaction: MessageReaction.Reaction?) -> Signal<Never, NoError> {
-    return account.postbox.transaction { transaction -> Api.InputUser? in
-        guard let peer = transaction.getPeer(peerId) else {
-            return nil
+public func _internal_getMessageNotificationWasDisplayed(transaction: Transaction, id: MessageId) -> Bool {
+    let key = ValueBoxKey(length: 8 + 4)
+    key.setInt64(0, value: id.peerId.toInt64())
+    key.setInt32(8, value: id.id)
+    return transaction.retrieveItemCacheEntry(id: ItemCacheEntryId(collectionId: Namespaces.CachedItemCollection.displayedMessageNotifications, key: key)) != nil
+}
+
+public func _internal_setMessageNotificationWasDisplayed(transaction: Transaction, id: MessageId) {
+    let key = ValueBoxKey(length: 8 + 4)
+    key.setInt64(0, value: id.peerId.toInt64())
+    key.setInt32(8, value: id.id)
+    transaction.putItemCacheEntry(id: ItemCacheEntryId(collectionId: Namespaces.CachedItemCollection.displayedMessageNotifications, key: key), entry: CodableEntry(data: Data()))
+}
+
+func _internal_updateStoryViewsForMyReaction(isChannel: Bool, views: Stories.Item.Views?, previousReaction: MessageReaction.Reaction?, reaction: MessageReaction.Reaction?) -> Stories.Item.Views? {
+    if !isChannel {
+        return views
+    }
+    
+    var views = views ?? Stories.Item.Views(seenCount: 0, reactedCount: 0, forwardCount: 0, seenPeerIds: [], reactions: [], hasList: false)
+    
+    if let reaction = reaction {
+        if previousReaction == nil {
+            views.reactedCount += 1
         }
-        guard let inputUser = apiInputUser(peer) else {
-            return nil
+        
+        do {
+            var reactions = views.reactions
+            
+            if let previousIndex = reactions.firstIndex(where: { $0.chosenOrder != nil }) {
+                reactions[previousIndex].chosenOrder = nil
+                reactions[previousIndex].count = max(0, reactions[previousIndex].count - 1)
+            }
+            if let reactionIndex = reactions.firstIndex(where: { $0.value == reaction }) {
+                reactions[reactionIndex].chosenOrder = 0
+                reactions[reactionIndex].count += 1
+            } else {
+                reactions.append(MessageReaction(
+                    value: reaction,
+                    count: 1,
+                    chosenOrder: 0
+                ))
+            }
+            views.reactions = reactions
+        }
+    } else {
+        if previousReaction != nil {
+            views.reactedCount = max(0, views.reactedCount - 1)
+        }
+        do {
+            var reactions = views.reactions
+            
+            if let previousIndex = reactions.firstIndex(where: { $0.chosenOrder != nil }) {
+                reactions[previousIndex].chosenOrder = nil
+                reactions[previousIndex].count = max(0, reactions[previousIndex].count - 1)
+                if reactions[previousIndex].count == 0 {
+                    reactions.remove(at: previousIndex)
+                }
+            }
+            views.reactions = reactions
+        }
+    }
+    
+    if views.isEmpty {
+        return nil
+    } else {
+        return views
+    }
+}
+
+func _internal_setStoryReaction(account: Account, peerId: EnginePeer.Id, id: Int32, reaction: MessageReaction.Reaction?) -> Signal<Never, NoError> {
+    return account.postbox.transaction { transaction -> (Stories.StoredItem?, Api.InputPeer?) in
+        guard let peer = transaction.getPeer(peerId) else {
+            return (nil, nil)
+        }
+        guard let inputPeer = apiInputPeer(peer) else {
+            return (nil, nil)
+        }
+        
+        var updatedItemValue: Stories.StoredItem?
+        
+        let updateViews: (Stories.Item.Views?, MessageReaction.Reaction?) -> Stories.Item.Views? = { views, previousReaction in
+            return _internal_updateStoryViewsForMyReaction(isChannel: peerId.namespace == Namespaces.Peer.CloudChannel, views: views, previousReaction: previousReaction, reaction: reaction)
         }
         
         var currentItems = transaction.getStoryItems(peerId: peerId)
@@ -1870,7 +2326,7 @@ func _internal_setStoryReaction(account: Account, peerId: EnginePeer.Id, id: Int
                         mediaAreas: item.mediaAreas,
                         text: item.text,
                         entities: item.entities,
-                        views: item.views,
+                        views: updateViews(item.views, item.myReaction),
                         privacy: item.privacy,
                         isPinned: item.isPinned,
                         isExpired: item.isEdited,
@@ -1880,8 +2336,11 @@ func _internal_setStoryReaction(account: Account, peerId: EnginePeer.Id, id: Int
                         isSelectedContacts: item.isSelectedContacts,
                         isForwardingDisabled: item.isForwardingDisabled,
                         isEdited: item.isEdited,
-                        myReaction: reaction
+                        isMy: item.isMy,
+                        myReaction: reaction,
+                        forwardInfo: item.forwardInfo
                     ))
+                    updatedItemValue = updatedItem
                     if let entry = CodableEntry(updatedItem) {
                         currentItems[i] = StoryItemsTableEntry(value: entry, id: updatedItem.id, expirationTimestamp: updatedItem.expirationTimestamp, isCloseFriends: updatedItem.isCloseFriends)
                     }
@@ -1899,7 +2358,7 @@ func _internal_setStoryReaction(account: Account, peerId: EnginePeer.Id, id: Int
                 mediaAreas: item.mediaAreas,
                 text: item.text,
                 entities: item.entities,
-                views: item.views,
+                views: updateViews(item.views, item.myReaction),
                 privacy: item.privacy,
                 isPinned: item.isPinned,
                 isExpired: item.isEdited,
@@ -1909,20 +2368,26 @@ func _internal_setStoryReaction(account: Account, peerId: EnginePeer.Id, id: Int
                 isSelectedContacts: item.isSelectedContacts,
                 isForwardingDisabled: item.isForwardingDisabled,
                 isEdited: item.isEdited,
-                myReaction: reaction
+                isMy: item.isMy,
+                myReaction: reaction,
+                forwardInfo: item.forwardInfo
             ))
+            updatedItemValue = updatedItem
             if let entry = CodableEntry(updatedItem) {
                 transaction.setStory(id: StoryId(peerId: peerId, id: id), value: entry)
             }
         }
         
-        return inputUser
+        return (updatedItemValue, inputPeer)
     }
-    |> mapToSignal { inputUser -> Signal<Never, NoError> in
-        guard let inputUser = inputUser else {
+    |> mapToSignal { storyItem, inputPeer -> Signal<Never, NoError> in
+        guard let storyItem = storyItem, let inputPeer = inputPeer else {
             return .complete()
         }
-        return account.network.request(Api.functions.stories.sendReaction(flags: 0, userId: inputUser, storyId: id, reaction: reaction?.apiReaction ?? .reactionEmpty))
+        
+        account.stateManager.injectStoryUpdates(updates: [InternalStoryUpdate.added(peerId: peerId, item: storyItem)])
+        
+        return account.network.request(Api.functions.stories.sendReaction(flags: 0, peer: inputPeer, storyId: id, reaction: reaction?.apiReaction ?? .reactionEmpty))
         |> map(Optional.init)
         |> `catch` { _ -> Signal<Api.Updates?, NoError> in
             return .single(nil)

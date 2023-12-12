@@ -61,6 +61,7 @@ public final class DrawingTextEntity: DrawingEntity, Codable {
         case filled
         case semi
         case stroke
+        case blur
     }
     
     public enum Animation: Codable, Equatable {
@@ -93,6 +94,10 @@ public final class DrawingTextEntity: DrawingEntity, Codable {
             }
         })
         return isAnimated
+    }
+    
+    public struct TextAttributes {
+        public static let color = NSAttributedString.Key(rawValue: "Attribute__Color")
     }
     
     public var text: NSAttributedString
@@ -247,8 +252,11 @@ public final class DrawingTextEntity: DrawingEntity, Codable {
         }
     }
 
-    public func duplicate() -> DrawingEntity {
+    public func duplicate(copy: Bool) -> DrawingEntity {
         let newEntity = DrawingTextEntity(text: self.text, style: self.style, animation: self.animation, font: self.font, alignment: self.alignment, fontSize: self.fontSize, color: self.color)
+        if copy {
+            newEntity.uuid = self.uuid
+        }
         newEntity.referenceDrawingSize = self.referenceDrawingSize
         newEntity.position = self.position
         newEntity.width = self.width
@@ -301,5 +309,35 @@ public final class DrawingTextEntity: DrawingEntity, Codable {
             return false
         }
         return true
+    }
+}
+
+public extension DrawingTextEntity {
+    func setColor(_ color: DrawingColor, range: NSRange) {
+        if range.length == 0 {
+            self.color = color
+            
+            let updatedText = self.text.mutableCopy() as! NSMutableAttributedString
+            let range = NSMakeRange(0, updatedText.length)
+            updatedText.removeAttribute(DrawingTextEntity.TextAttributes.color, range: range)
+            self.text = updatedText
+        } else {
+            let updatedText = self.text.mutableCopy() as! NSMutableAttributedString
+            updatedText.removeAttribute(DrawingTextEntity.TextAttributes.color, range: range)
+            updatedText.addAttribute(DrawingTextEntity.TextAttributes.color, value: color.toUIColor(), range: range)
+            self.text = updatedText
+        }
+    }
+    
+    func color(in range: NSRange) -> DrawingColor {
+        if range.length == 0 {
+            return self.color
+        } else {
+            if let color = self.text.attribute(DrawingTextEntity.TextAttributes.color, at: range.location, effectiveRange: nil) as? UIColor {
+                return DrawingColor(color: color)
+            } else {
+                return self.color
+            }
+        }
     }
 }

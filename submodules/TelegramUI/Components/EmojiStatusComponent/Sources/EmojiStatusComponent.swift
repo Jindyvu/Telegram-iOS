@@ -14,6 +14,7 @@ import TextFormat
 import Lottie
 import GZip
 import HierarchyTrackingLayer
+import TelegramUIPreferences
 
 public final class EmojiStatusComponent: Component {
     public typealias EnvironmentType = Empty
@@ -22,7 +23,7 @@ public final class EmojiStatusComponent: Component {
         case file(file: TelegramMediaFile)
         case customEmoji(fileId: Int64)
         
-        var fileId: MediaId {
+        public var fileId: MediaId {
             switch self {
             case let .file(file):
                 return file.fileId
@@ -52,7 +53,9 @@ public final class EmojiStatusComponent: Component {
         case image(image: UIImage?)
     }
     
-    public let context: AccountContext
+    public let postbox: Postbox
+    public let energyUsageSettings: EnergyUsageSettings
+    public let resolveInlineStickers: ([Int64]) -> Signal<[Int64: TelegramMediaFile], NoError>
     public let animationCache: AnimationCache
     public let animationRenderer: MultiAnimationRenderer
     public let content: Content
@@ -61,7 +64,7 @@ public final class EmojiStatusComponent: Component {
     public let action: (() -> Void)?
     public let emojiFileUpdated: ((TelegramMediaFile?) -> Void)?
     
-    public init(
+    public convenience init(
         context: AccountContext,
         animationCache: AnimationCache,
         animationRenderer: MultiAnimationRenderer,
@@ -71,7 +74,37 @@ public final class EmojiStatusComponent: Component {
         action: (() -> Void)?,
         emojiFileUpdated: ((TelegramMediaFile?) -> Void)? = nil
     ) {
-        self.context = context
+        self.init(
+            postbox: context.account.postbox,
+            energyUsageSettings: context.sharedContext.energyUsageSettings,
+            resolveInlineStickers: { fileIds in
+                return context.engine.stickers.resolveInlineStickers(fileIds: fileIds)
+            },
+            animationCache: animationCache,
+            animationRenderer: animationRenderer,
+            content: content,
+            isVisibleForAnimations: isVisibleForAnimations,
+            useSharedAnimation: useSharedAnimation,
+            action: action,
+            emojiFileUpdated: emojiFileUpdated
+        )
+    }
+    
+    public init(
+        postbox: Postbox,
+        energyUsageSettings: EnergyUsageSettings,
+        resolveInlineStickers: @escaping ([Int64]) -> Signal<[Int64: TelegramMediaFile], NoError>,
+        animationCache: AnimationCache,
+        animationRenderer: MultiAnimationRenderer,
+        content: Content,
+        isVisibleForAnimations: Bool,
+        useSharedAnimation: Bool = false,
+        action: (() -> Void)?,
+        emojiFileUpdated: ((TelegramMediaFile?) -> Void)? = nil
+    ) {
+        self.postbox = postbox
+        self.energyUsageSettings = energyUsageSettings
+        self.resolveInlineStickers = resolveInlineStickers
         self.animationCache = animationCache
         self.animationRenderer = animationRenderer
         self.content = content
@@ -83,7 +116,9 @@ public final class EmojiStatusComponent: Component {
     
     public func withVisibleForAnimations(_ isVisibleForAnimations: Bool) -> EmojiStatusComponent {
         return EmojiStatusComponent(
-            context: self.context,
+            postbox: self.postbox,
+            energyUsageSettings: self.energyUsageSettings,
+            resolveInlineStickers: self.resolveInlineStickers,
             animationCache: self.animationCache,
             animationRenderer: self.animationRenderer,
             content: self.content,
@@ -95,7 +130,10 @@ public final class EmojiStatusComponent: Component {
     }
     
     public static func ==(lhs: EmojiStatusComponent, rhs: EmojiStatusComponent) -> Bool {
-        if lhs.context !== rhs.context {
+        if lhs.postbox !== rhs.postbox {
+            return false
+        }
+        if lhs.energyUsageSettings != rhs.energyUsageSettings {
             return false
         }
         if lhs.animationCache !== rhs.animationCache {
@@ -202,6 +240,8 @@ public final class EmojiStatusComponent: Component {
             var emojiLoopMode: LoopMode?
             var emojiSize = CGSize()
             
+            var iconTintColor: UIColor?
+            
             self.isUserInteractionEnabled = component.action != nil
             
             //let previousContent = self.component?.content
@@ -210,19 +250,25 @@ public final class EmojiStatusComponent: Component {
                 case .none:
                     iconImage = nil
                 case let .premium(color):
-                    if let sourceImage = UIImage(bundleImageName: "Chat/Input/Media/EntityInputPremiumIcon") {
-                        iconImage = generateImage(sourceImage.size, contextGenerator: { size, context in
-                            if let cgImage = sourceImage.cgImage {
-                                context.clear(CGRect(origin: CGPoint(), size: size))
-                                let imageSize = CGSize(width: sourceImage.size.width - 8.0, height: sourceImage.size.height - 8.0)
-                                context.clip(to: CGRect(origin: CGPoint(x: floor((size.width - imageSize.width) / 2.0), y: floor((size.height - imageSize.height) / 2.0)), size: imageSize), mask: cgImage)
-                                
-                                context.setFillColor(color.cgColor)
-                                context.fill(CGRect(origin: CGPoint(), size: size))
-                            }
-                        }, opaque: false)
+                    iconTintColor = color
+                    
+                    if case .premium = self.component?.content, let image = self.iconView?.image {
+                        iconImage = image
                     } else {
-                        iconImage = nil
+                        if let sourceImage = UIImage(bundleImageName: "Chat/Input/Media/EntityInputPremiumIcon") {
+                            iconImage = generateImage(sourceImage.size, contextGenerator: { size, context in
+                                if let cgImage = sourceImage.cgImage {
+                                    context.clear(CGRect(origin: CGPoint(), size: size))
+                                    let imageSize = CGSize(width: sourceImage.size.width - 8.0, height: sourceImage.size.height - 8.0)
+                                    context.clip(to: CGRect(origin: CGPoint(x: floor((size.width - imageSize.width) / 2.0), y: floor((size.height - imageSize.height) / 2.0)), size: imageSize), mask: cgImage)
+                                    
+                                    context.setFillColor(UIColor.white.cgColor)
+                                    context.fill(CGRect(origin: CGPoint(), size: size))
+                                }
+                            }, opaque: false)?.withRenderingMode(.alwaysTemplate)
+                        } else {
+                            iconImage = nil
+                        }
                     }
                 case let .topic(title, color, realSize):
                     let colors = topicIconColors(for: color)
@@ -364,7 +410,19 @@ public final class EmojiStatusComponent: Component {
                         iconView.layer.animateSpring(from: 0.1 as NSNumber, to: 1.0 as NSNumber, keyPath: "transform.scale", duration: 0.5)
                     }
                 }
-                iconView.image = iconImage
+                if iconView.image !== iconImage {
+                    iconView.image = iconImage
+                }
+                
+                if let iconTintColor {
+                    if transition.animation.isImmediate {
+                        iconView.tintColor = iconTintColor
+                    } else {
+                        transition.setTintColor(view: iconView, color: iconTintColor)
+                    }
+                } else {
+                    iconView.tintColor = nil
+                }
                 
                 var useFit = false
                 switch component.content {
@@ -419,7 +477,15 @@ public final class EmojiStatusComponent: Component {
                             loopCount = value
                         }
                         animationLayer = InlineStickerItemLayer(
-                            context: component.context,
+                            context: .custom(InlineStickerItemLayer.Context.Custom(
+                                postbox: component.postbox,
+                                energyUsageSettings: {
+                                    return component.energyUsageSettings
+                                },
+                                resolveInlineStickers: { fileIds in
+                                    return component.resolveInlineStickers(fileIds)
+                                }
+                            )),
                             userLocation: .other,
                             attemptSynchronousLoad: false,
                             emoji: ChatTextInputTextCustomEmojiAttribute(interactivelySelectedFromPackId: nil, fileId: emojiFile.fileId.id, file: emojiFile),
@@ -458,12 +524,11 @@ public final class EmojiStatusComponent: Component {
                             }
                         }
                     }
+                    
                     if accentTint {
-                        animationLayer.contentTintColor = emojiThemeColor
-                        animationLayer.dynamicColor = emojiThemeColor
+                        animationLayer.updateTintColor(contentTintColor: emojiThemeColor, dynamicColor: emojiThemeColor, transition: transition)
                     } else {
-                        animationLayer.contentTintColor = nil
-                        animationLayer.dynamicColor = nil
+                        animationLayer.updateTintColor(contentTintColor: nil, dynamicColor: nil, transition: transition)
                     }
                     
                     animationLayer.frame = CGRect(origin: CGPoint(), size: size)
@@ -508,7 +573,7 @@ public final class EmojiStatusComponent: Component {
                     }*/
                 } else {
                     if self.emojiFileDisposable == nil {
-                        self.emojiFileDisposable = (component.context.engine.stickers.resolveInlineStickers(fileIds: [emojiFileId])
+                        self.emojiFileDisposable = (component.resolveInlineStickers([emojiFileId])
                         |> deliverOnMainQueue).start(next: { [weak self] result in
                             guard let strongSelf = self else {
                                 return

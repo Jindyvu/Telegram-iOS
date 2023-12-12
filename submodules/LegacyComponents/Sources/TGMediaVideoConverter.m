@@ -241,7 +241,7 @@
         SAtomic *context = [[SAtomic alloc] initWithValue:[TGMediaVideoConversionContext contextWithQueue:queue subscriber:subscriber]];
         NSURL *outputUrl = [NSURL fileURLWithPath:path];
         
-        NSString *path = TGComponentsPathForResource(@"blank", @"mp4");
+        NSString *path = TGComponentsPathForResource(@"BlankVideo", @"m4v");
         AVAsset *avAsset = [[AVURLAsset alloc] initWithURL:[NSURL fileURLWithPath:path] options:nil];
         
         NSArray *requiredKeys = @[ @"tracks", @"duration", @"playable" ];
@@ -786,7 +786,7 @@
 
 + (SSignal *)hashForAVAsset:(AVAsset *)avAsset adjustments:(TGMediaVideoEditAdjustments *)adjustments
 {
-    if ([adjustments trimApplied] || [adjustments cropAppliedForAvatar:false] || adjustments.sendAsGif)
+    if ([adjustments trimApplied] || [adjustments cropAppliedForAvatar:false] || adjustments.sendAsGif || [adjustments toolsApplied] || [adjustments hasPainting])
         return [SSignal single:nil];
     
     NSURL *fileUrl = nil;

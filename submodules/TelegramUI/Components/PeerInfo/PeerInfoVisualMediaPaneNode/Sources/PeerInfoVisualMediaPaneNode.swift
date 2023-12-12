@@ -26,6 +26,8 @@ import AppBundle
 import ChatControllerInteraction
 import InvisibleInkDustNode
 import MediaPickerUI
+import ChatControllerInteraction
+import UIKitRuntimeUtils
 
 public enum PeerInfoPaneKey: Int32 {
     case members
@@ -37,6 +39,7 @@ public enum PeerInfoPaneKey: Int32 {
     case links
     case gifs
     case groupsInCommon
+    case recommended
 }
 
 public struct PeerInfoStatusData: Equatable {
@@ -275,7 +278,7 @@ private struct Month: Equatable {
     }
 }
 
-private let durationFont = Font.regular(12.0)
+private let durationFont = Font.semibold(11.0)
 private let minDurationImage: UIImage = {
     let image = generateImage(CGSize(width: 20.0, height: 20.0), rotatedContext: { size, context in
         context.clear(CGRect(origin: CGPoint(), size: size))
@@ -286,6 +289,18 @@ private let minDurationImage: UIImage = {
             image.draw(in: CGRect(origin: CGPoint(x: (size.width - image.size.width) / 2.0, y: (size.height - image.size.height) / 2.0), size: image.size))
             UIGraphicsPopContext()
         }
+    })
+    return image!
+}()
+
+private let rightShadowImage: UIImage = {
+    let baseImage = UIImage(bundleImageName: "Peer Info/MediaGridShadow")!
+    let image = generateImage(baseImage.size, rotatedContext: { size, context in
+        context.clear(CGRect(origin: CGPoint(), size: size))
+        
+        UIGraphicsPushContext(context)
+        baseImage.draw(in: CGRect(origin: CGPoint(), size: size))
+        UIGraphicsPopContext()
     })
     return image!
 }()
@@ -317,14 +332,11 @@ private final class DurationLayer: CALayer {
             let verticalInset: CGFloat = 2.0
             let image = generateImage(CGSize(width: textSize.width + sideInset * 2.0, height: textSize.height + verticalInset * 2.0), rotatedContext: { size, context in
                 context.clear(CGRect(origin: CGPoint(), size: size))
-
-                context.setFillColor(UIColor(white: 0.0, alpha: 0.5).cgColor)
-                context.setBlendMode(.copy)
-                context.fillEllipse(in: CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: CGSize(width: size.height, height: size.height)))
-                context.fillEllipse(in: CGRect(origin: CGPoint(x: size.width - size.height, y: 0.0), size: CGSize(width: size.height, height: size.height)))
-                context.fill(CGRect(origin: CGPoint(x: size.height / 2.0, y: 0.0), size: CGSize(width: size.width - size.height, height: size.height)))
-
+                
                 context.setBlendMode(.normal)
+                
+                context.setShadow(offset: CGSize(width: 0.0, height: 0.0), blur: 2.5, color: UIColor(rgb: 0x000000, alpha: 0.22).cgColor)
+                
                 UIGraphicsPushContext(context)
                 string.draw(in: bounds.offsetBy(dx: sideInset, dy: verticalInset))
                 UIGraphicsPopContext()
@@ -355,6 +367,7 @@ private protocol ItemLayer: SparseItemGridLayer {
 private final class GenericItemLayer: CALayer, ItemLayer {
     var item: VisualMediaItem?
     var durationLayer: DurationLayer?
+    var rightShadowLayer: SimpleLayer?
     var minFactor: CGFloat = 1.0
     var selectionLayer: GridMessageSelectionLayer?
     var dustLayer: MediaDustLayer?
@@ -403,7 +416,7 @@ private final class GenericItemLayer: CALayer, ItemLayer {
     func updateDuration(duration: Int32?, isMin: Bool, minFactor: CGFloat) {
         self.minFactor = minFactor
 
-        if let duration = duration {
+        if let duration {
             if let durationLayer = self.durationLayer {
                 durationLayer.update(duration: duration, isMin: isMin)
             } else {
@@ -417,6 +430,24 @@ private final class GenericItemLayer: CALayer, ItemLayer {
         } else if let durationLayer = self.durationLayer {
             self.durationLayer = nil
             durationLayer.removeFromSuperlayer()
+        }
+        
+        let size = self.bounds.size
+        
+        if self.durationLayer != nil {
+            if self.rightShadowLayer == nil {
+                let rightShadowLayer = SimpleLayer()
+                self.rightShadowLayer = rightShadowLayer
+                self.insertSublayer(rightShadowLayer, at: 0)
+                rightShadowLayer.contents = rightShadowImage.cgImage
+                let shadowSize = CGSize(width: min(size.width, rightShadowImage.size.width), height: min(size.height, rightShadowImage.size.height))
+                rightShadowLayer.frame = CGRect(origin: CGPoint(x: size.width - shadowSize.width, y: size.height - shadowSize.height), size: shadowSize)
+            }
+        } else {
+            if let rightShadowLayer = self.rightShadowLayer {
+                self.rightShadowLayer = nil
+                rightShadowLayer.removeFromSuperlayer()
+            }
         }
     }
 
@@ -476,149 +507,14 @@ private final class GenericItemLayer: CALayer, ItemLayer {
     }
 
     func update(size: CGSize, insets: UIEdgeInsets, displayItem: SparseItemGridDisplayItem, binding: SparseItemGridBinding, item: SparseItemGrid.Item?) {
-        /*if let durationLayer = self.durationLayer {
+        if let durationLayer = self.durationLayer {
             durationLayer.frame = CGRect(origin: CGPoint(x: size.width - 3.0, y: size.height - 3.0), size: CGSize())
-        }*/
-    }
-}
-
-private final class CaptureProtectedItemLayer: AVSampleBufferDisplayLayer, ItemLayer {
-    var item: VisualMediaItem?
-    var durationLayer: DurationLayer?
-    var minFactor: CGFloat = 1.0
-    var selectionLayer: GridMessageSelectionLayer?
-    var dustLayer: MediaDustLayer?
-    var disposable: Disposable?
-
-    var hasContents: Bool = false
-
-    override init() {
-        super.init()
+        }
         
-        self.contentsGravity = .resize
-        if #available(iOS 13.0, *) {
-            self.preventsCapture = true
-            self.preventsDisplaySleepDuringVideoPlayback = false
+        if let rightShadowLayer = self.rightShadowLayer {
+            let shadowSize = CGSize(width: min(size.width, rightShadowImage.size.width), height: min(size.height, rightShadowImage.size.height))
+            rightShadowLayer.frame = CGRect(origin: CGPoint(x: size.width - shadowSize.width, y: size.height - shadowSize.height), size: shadowSize)
         }
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    deinit {
-        self.disposable?.dispose()
-    }
-
-    override func action(forKey event: String) -> CAAction? {
-        return nullAction
-    }
-    
-    private var layerContents: Any?
-    func getContents() -> Any? {
-        return self.layerContents
-    }
-    
-    func setContents(_ contents: Any?) {
-        self.layerContents = contents
-        
-        if let image = contents as? UIImage {
-            self.layerContents = image.cgImage
-            if let cmSampleBuffer = image.cmSampleBuffer {
-                self.enqueue(cmSampleBuffer)
-            }
-        }
-    }
-    
-    func setSpoilerContents(_ contents: Any?) {
-        if let image = contents as? UIImage {
-            self.dustLayer?.contents = image.cgImage
-        }
-    }
-
-    func bind(item: VisualMediaItem) {
-        self.item = item
-    }
-    
-    func updateDuration(duration: Int32?, isMin: Bool, minFactor: CGFloat) {
-        self.minFactor = minFactor
-
-        if let duration = duration {
-            if let durationLayer = self.durationLayer {
-                durationLayer.update(duration: duration, isMin: isMin)
-            } else {
-                let durationLayer = DurationLayer()
-                durationLayer.update(duration: duration, isMin: isMin)
-                self.addSublayer(durationLayer)
-                durationLayer.frame = CGRect(origin: CGPoint(x: self.bounds.width - 3.0, y: self.bounds.height - 3.0), size: CGSize())
-                durationLayer.transform = CATransform3DMakeScale(minFactor, minFactor, 1.0)
-                self.durationLayer = durationLayer
-            }
-        } else if let durationLayer = self.durationLayer {
-            self.durationLayer = nil
-            durationLayer.removeFromSuperlayer()
-        }
-    }
-
-    func updateSelection(theme: CheckNodeTheme, isSelected: Bool?, animated: Bool) {
-        if let isSelected = isSelected {
-            if let selectionLayer = self.selectionLayer {
-                selectionLayer.updateSelected(isSelected, animated: animated)
-            } else {
-                let selectionLayer = GridMessageSelectionLayer(theme: theme)
-                selectionLayer.updateSelected(isSelected, animated: false)
-                self.selectionLayer = selectionLayer
-                self.addSublayer(selectionLayer)
-                if !self.bounds.isEmpty {
-                    selectionLayer.frame = CGRect(origin: CGPoint(), size: self.bounds.size)
-                    selectionLayer.updateLayout(size: self.bounds.size)
-                    if animated {
-                        selectionLayer.animateIn()
-                    }
-                }
-            }
-        } else if let selectionLayer = self.selectionLayer {
-            self.selectionLayer = nil
-            if animated {
-                selectionLayer.animateOut { [weak selectionLayer] in
-                    selectionLayer?.removeFromSuperlayer()
-                }
-            } else {
-                selectionLayer.removeFromSuperlayer()
-            }
-        }
-    }
-    
-    func updateHasSpoiler(hasSpoiler: Bool) {
-        if hasSpoiler {
-            if let _ = self.dustLayer {
-            } else {
-                let dustLayer = MediaDustLayer()
-                self.dustLayer = dustLayer
-                self.addSublayer(dustLayer)
-                if !self.bounds.isEmpty {
-                    dustLayer.frame = CGRect(origin: CGPoint(), size: self.bounds.size)
-                    dustLayer.updateLayout(size: self.bounds.size)
-                }
-            }
-        } else if let dustLayer = self.dustLayer {
-            self.dustLayer = nil
-            dustLayer.removeFromSuperlayer()
-        }
-    }
-
-    func unbind() {
-        self.item = nil
-    }
-
-    func needsShimmer() -> Bool {
-        return !self.hasContents
-    }
-
-    func update(size: CGSize, insets: UIEdgeInsets, displayItem: SparseItemGridDisplayItem, binding: SparseItemGridBinding, item: SparseItemGrid.Item?) {
-        /*if let durationLayer = self.durationLayer {
-            durationLayer.frame = CGRect(origin: CGPoint(x: size.width - 3.0, y: size.height - 3.0), size: CGSize())
-        }*/
     }
 }
 
@@ -941,12 +837,14 @@ private final class SparseItemGridBindingImpl: SparseItemGridBinding, ListShimme
         return self.chatPresentationData.theme.theme.list.itemPlainSeparatorColor
     }
 
-    func createLayer() -> SparseItemGridLayer? {
+    func createLayer(item: SparseItemGrid.Item) -> SparseItemGridLayer? {
         if self.useListItems {
             return nil
         }
         if self.captureProtected {
-            return CaptureProtectedItemLayer()
+            let layer = GenericItemLayer()
+            setLayerDisableScreenshots(layer, true)
+            return layer
         } else {
             return GenericItemLayer()
         }
@@ -1109,7 +1007,7 @@ private final class SparseItemGridBindingImpl: SparseItemGridBinding, ListShimme
                     var duration: Int32?
                     var isMin: Bool = false
                     if let file = selectedMedia as? TelegramMediaFile, !file.isAnimated {
-                        duration = file.duration.flatMap(Int32.init)
+                        duration = file.duration.flatMap { Int32(floor($0)) }
                         isMin = layer.bounds.width < 80.0
                     }
                     layer.updateDuration(duration: duration, isMin: isMin, minFactor: min(1.0, layer.bounds.height / 74.0))
@@ -1327,7 +1225,7 @@ public final class PeerInfoVisualMediaPaneNode: ASDisplayNode, PeerInfoPaneNode,
 
         let listItemInteraction = ListMessageItemInteraction(
             openMessage: { message, mode in
-                return chatControllerInteraction.openMessage(message, mode)
+                return chatControllerInteraction.openMessage(message, OpenMessageParams(mode: mode))
             },
             openMessageContextMenu: { message, bool, node, rect, gesture in
                 chatControllerInteraction.openMessageContextMenu(message, bool, node, rect, gesture, nil)
@@ -1335,8 +1233,8 @@ public final class PeerInfoVisualMediaPaneNode: ASDisplayNode, PeerInfoPaneNode,
             toggleMessagesSelection: { messageId, selected in
                 chatControllerInteraction.toggleMessagesSelection(messageId, selected)
             },
-            openUrl: { url, param1, param2, message in
-                chatControllerInteraction.openUrl(url, param1, param2, message)
+            openUrl: { url, concealed, external, message in
+                chatControllerInteraction.openUrl(ChatControllerInteraction.OpenUrl(url: url, concealed: concealed, external: external, message: message))
             },
             openInstantPage: { message, data in
                 chatControllerInteraction.openInstantPage(message, data)
@@ -1412,7 +1310,7 @@ public final class PeerInfoVisualMediaPaneNode: ASDisplayNode, PeerInfoPaneNode,
                 }
                 strongSelf.chatControllerInteraction.toggleMessagesSelection([item.message.id], toggledValue)
             } else {
-                let _ = strongSelf.chatControllerInteraction.openMessage(item.message, .default)
+                let _ = strongSelf.chatControllerInteraction.openMessage(item.message, OpenMessageParams(mode: .default))
             }
         }
 
@@ -1504,7 +1402,7 @@ public final class PeerInfoVisualMediaPaneNode: ASDisplayNode, PeerInfoPaneNode,
         
         self._itemInteraction = VisualMediaItemInteraction(
             openMessage: { [weak self] message in
-                let _ = self?.chatControllerInteraction.openMessage(message, .default)
+                let _ = self?.chatControllerInteraction.openMessage(message, OpenMessageParams(mode: .default))
             },
             openMessageContextActions: { [weak self] message, sourceNode, sourceRect, gesture in
                 self?.chatControllerInteraction.openMessageContextActions(message, sourceNode, sourceRect, gesture)

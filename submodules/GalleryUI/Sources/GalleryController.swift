@@ -103,7 +103,8 @@ private let internalMimePrefixes: [String] = [
     "image/jpeg",
     "image/jpg",
     "image/png",
-    "image/heic"
+    "image/heic",
+    "image/jxl"
 ]
 
 public func internalDocumentItemSupportsMimeType(_ type: String, fileName: String?) -> Bool {
@@ -134,8 +135,31 @@ private let italicFont = Font.italic(16.0)
 private let boldItalicFont = Font.semiboldItalic(16.0)
 private let fixedFont = UIFont(name: "Menlo-Regular", size: 15.0) ?? textFont
 
-public func galleryCaptionStringWithAppliedEntities(_ text: String, entities: [MessageTextEntity], message: Message?) -> NSAttributedString {
-    return stringWithAppliedEntities(text, entities: entities, baseColor: .white, linkColor: UIColor(rgb: 0x5ac8fa), baseFont: textFont, linkFont: textFont, boldFont: boldFont, italicFont: italicFont, boldItalicFont: boldItalicFont, fixedFont: fixedFont, blockQuoteFont: textFont, underlineLinks: false, message: message)
+public func galleryCaptionStringWithAppliedEntities(context: AccountContext, text: String, entities: [MessageTextEntity], message: Message?, cachedMessageSyntaxHighlight: CachedMessageSyntaxHighlight? = nil) -> NSAttributedString {
+    var baseQuoteSecondaryTintColor: UIColor?
+    var baseQuoteTertiaryTintColor: UIColor?
+    if let nameColor = message?.author?.nameColor {
+        let resolvedColor = context.peerNameColors.get(nameColor)
+        if resolvedColor.secondary != nil {
+            baseQuoteSecondaryTintColor = .clear
+        }
+        if resolvedColor.tertiary != nil {
+            baseQuoteTertiaryTintColor = .clear
+        }
+    }
+    
+    return stringWithAppliedEntities(
+        text,
+        entities: entities,
+        baseColor: .white,
+        linkColor: UIColor(rgb: 0x5ac8fa),
+        baseQuoteTintColor: .white,
+        baseQuoteSecondaryTintColor: baseQuoteSecondaryTintColor,
+        baseQuoteTertiaryTintColor: baseQuoteTertiaryTintColor,
+        codeBlockTitleColor: .white,
+        codeBlockAccentColor: .white,
+        codeBlockBackgroundColor: UIColor(white: 1.0, alpha: 0.2),
+        baseFont: textFont, linkFont: textFont, boldFont: boldFont, italicFont: italicFont, boldItalicFont: boldItalicFont, fixedFont: fixedFont, blockQuoteFont: textFont, underlineLinks: false, message: message, adjustQuoteFontSize: true, cachedMessageSyntaxHighlight: cachedMessageSyntaxHighlight)
 }
 
 private func galleryMessageCaptionText(_ message: Message) -> String {
@@ -183,6 +207,7 @@ public func galleryItemForEntry(
                 location: location,
                 translateToLanguage: translateToLanguage,
                 peerIsCopyProtected: peerIsCopyProtected,
+                isSecret: isSecret,
                 displayInfoOnTop: displayInfoOnTop,
                 performAction: performAction,
                 openActionOptions: openActionOptions,
@@ -223,7 +248,7 @@ public func galleryItemForEntry(
                     entities = result
                 }
                                 
-                let caption = galleryCaptionStringWithAppliedEntities(text, entities: entities, message: message)
+                let caption = galleryCaptionStringWithAppliedEntities(context: context, text: text, entities: entities, message: message)
                 return UniversalVideoGalleryItem(
                     context: context,
                     presentationData: presentationData,
@@ -264,6 +289,7 @@ public func galleryItemForEntry(
                             location: location,
                             translateToLanguage: translateToLanguage,
                             peerIsCopyProtected: peerIsCopyProtected,
+                            isSecret: isSecret,
                             displayInfoOnTop: displayInfoOnTop,
                             performAction: performAction,
                             openActionOptions: openActionOptions,
@@ -319,7 +345,7 @@ public func galleryItemForEntry(
                     if let result = addLocallyGeneratedEntities(descriptionText, enabledTypes: [.timecode], entities: entities, mediaDuration: 86400) {
                         entities = result
                     }
-                    description = galleryCaptionStringWithAppliedEntities(descriptionText, entities: entities, message: message)
+                    description = galleryCaptionStringWithAppliedEntities(context: context, text: descriptionText, entities: entities, message: message)
                 }
                 return UniversalVideoGalleryItem(
                     context: context,
@@ -1117,7 +1143,7 @@ public class GalleryController: ViewController, StandalonePresentableController,
                     if let strongSelf = self, strongSelf.traceVisibility() {
                         let _ = strongSelf.context.engine.messages.addSecretChatMessageScreenshot(peerId: id.peerId).start()
                     }
-                })
+                }).strict()
             }
         default:
             break
@@ -1210,6 +1236,8 @@ public class GalleryController: ViewController, StandalonePresentableController,
                     self?.dismiss(forceAway: true)
                 })
             }
+        }, controller: { [weak self] in
+            return self
         })
         
         let disableTapNavigation = !(self.context.sharedContext.currentMediaDisplaySettings.with { $0 }.showNextMediaOnTap)

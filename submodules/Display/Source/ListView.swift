@@ -189,6 +189,7 @@ open class ListView: ASDisplayNode, UIScrollViewAccessibilityDelegate, UIGesture
     public private(set) final var visibleSize: CGSize = CGSize()
     public private(set) final var insets = UIEdgeInsets()
     public final var visualInsets: UIEdgeInsets?
+    public final var dynamicVisualInsets: (() -> UIEdgeInsets)?
     public private(set) final var headerInsets = UIEdgeInsets()
     public private(set) final var scrollIndicatorInsets = UIEdgeInsets()
     private final var ensureTopInsetForOverlayHighlightedItems: CGFloat?
@@ -393,7 +394,7 @@ open class ListView: ASDisplayNode, UIScrollViewAccessibilityDelegate, UIGesture
         didSet {
             if self.isAuxiliaryDisplayLinkEnabled {
                 if self.auxiliaryDisplayLinkHandle == nil {
-                    self.auxiliaryDisplayLinkHandle = SharedDisplayLinkDriver.shared.add(needsHighestFramerate: true, { [weak self] in
+                    self.auxiliaryDisplayLinkHandle = SharedDisplayLinkDriver.shared.add(framesPerSecond: .max, { [weak self] _ in
                         guard let self else {
                             return
                         }
@@ -1818,7 +1819,7 @@ open class ListView: ASDisplayNode, UIScrollViewAccessibilityDelegate, UIGesture
             if let index = node.index {
                 nodes.append(.Node(index: index, frame: node.apparentFrame, referenceNode: QueueLocalObject(queue: Queue.mainQueue(), generate: {
                     return node
-                })))
+                }), newNode: nil))
             } else {
                 nodes.append(.Placeholder(frame: node.apparentFrame))
             }
@@ -1999,10 +2000,10 @@ open class ListView: ASDisplayNode, UIScrollViewAccessibilityDelegate, UIGesture
                         }
                         
                         switch state.nodes[i] {
-                            case let .Node(_, frame, referenceNode):
-                                state.nodes[i] = .Node(index: updatedIndex, frame: frame, referenceNode: referenceNode)
-                            case .Placeholder:
-                                break
+                        case let .Node(_, frame, referenceNode, newNode):
+                            state.nodes[i] = .Node(index: updatedIndex, frame: frame, referenceNode: referenceNode, newNode: newNode)
+                        case .Placeholder:
+                            break
                         }
                         i += 1
                     }
@@ -2038,10 +2039,10 @@ open class ListView: ASDisplayNode, UIScrollViewAccessibilityDelegate, UIGesture
                         }
                         
                         switch state.nodes[i] {
-                            case let .Node(_, frame, referenceNode):
-                                state.nodes[i] = .Node(index: updatedIndex, frame: frame, referenceNode: referenceNode)
-                            case .Placeholder:
-                                break
+                        case let .Node(_, frame, referenceNode, newNode):
+                            state.nodes[i] = .Node(index: updatedIndex, frame: frame, referenceNode: referenceNode, newNode: newNode)
+                        case .Placeholder:
+                            break
                         }
                     }
                 }
@@ -2096,7 +2097,7 @@ open class ListView: ASDisplayNode, UIScrollViewAccessibilityDelegate, UIGesture
                 
                 var updateIndices = updateAdjacentItemsIndices
                 if widthUpdated {
-                    for case let .Node(index, _, _) in updatedState.nodes {
+                    for case let .Node(index, _, _, _) in updatedState.nodes {
                         updateIndices.insert(index)
                     }
                 }
@@ -2204,7 +2205,7 @@ open class ListView: ASDisplayNode, UIScrollViewAccessibilityDelegate, UIGesture
             
             var i = 0
             for node in state.nodes {
-                if case let .Node(index, _, referenceNode) = node , index == nodeIndex {
+                if case let .Node(index, _, referenceNode, _) = node, index == nodeIndex {
                     if let referenceNode = referenceNode {
                         continueWithoutNode = false
                         var controlledTransition: ControlledTransition?
@@ -2434,17 +2435,26 @@ open class ListView: ASDisplayNode, UIScrollViewAccessibilityDelegate, UIGesture
         }
         
         if node.index == nil {
+            var duration = insertionAnimationDuration
+            var hasCustomRemoveAnimation = false
+            if let value = self.customItemDeleteAnimationDuration(itemNode: node) {
+                duration = value
+                hasCustomRemoveAnimation = true
+            }
+            
             if node.animationForKey("height") == nil || !(node is ListViewTempItemNode) {
-                node.addHeightAnimation(0.0, duration: insertionAnimationDuration * UIView.animationDurationFactor(), beginAt: timestamp)
+                node.addHeightAnimation(0.0, duration: duration * UIView.animationDurationFactor(), beginAt: timestamp)
             }
             if node.animationForKey("apparentHeight") == nil || !(node is ListViewTempItemNode) {
-                node.addApparentHeightAnimation(0.0, duration: insertionAnimationDuration * UIView.animationDurationFactor(), beginAt: timestamp, update: { [weak node] progress, currentValue in
+                node.addApparentHeightAnimation(0.0, duration: duration * UIView.animationDurationFactor(), beginAt: timestamp, update: { [weak node] progress, currentValue in
                     if let node = node {
                         node.animateFrameTransition(progress, currentValue)
                     }
                 })
             }
-            node.animateRemoved(timestamp, duration: insertionAnimationDuration * UIView.animationDurationFactor())
+            if !hasCustomRemoveAnimation {
+                node.animateRemoved(timestamp, duration: duration * UIView.animationDurationFactor())
+            }
         } else if animated {
             if takenAnimation {
                 if let previousFrame = previousFrame {
@@ -2931,7 +2941,7 @@ open class ListView: ASDisplayNode, UIScrollViewAccessibilityDelegate, UIGesture
                 if let index = itemNode.index, index == scrollToItem.index {
                     let insets = self.insets// updateSizeAndInsets?.insets ?? self.insets
                     
-                    let offset: CGFloat
+                    var offset: CGFloat
                     switch scrollToItem.position {
                         case let .bottom(additionalOffset):
                             offset = (self.visibleSize.height - insets.bottom) - itemNode.apparentFrame.maxY + itemNode.scrollPositioningInsets.bottom + additionalOffset
@@ -2943,10 +2953,15 @@ open class ListView: ASDisplayNode, UIScrollViewAccessibilityDelegate, UIGesture
                                 offset = insets.top + floor(((self.visibleSize.height - insets.bottom - insets.top) - itemNode.frame.size.height) / 2.0) - itemNode.apparentFrame.minY
                             } else {
                                 switch overflow {
-                                    case .top:
-                                        offset = insets.top - itemNode.apparentFrame.minY
-                                    case .bottom:
-                                        offset = (self.visibleSize.height - insets.bottom) - itemNode.apparentFrame.maxY
+                                case .top:
+                                    offset = insets.top - itemNode.apparentFrame.minY
+                                case .bottom:
+                                    offset = (self.visibleSize.height - insets.bottom) - itemNode.apparentFrame.maxY
+                                case let .custom(getOverflow):
+                                    let overflow = getOverflow(itemNode)
+                                    offset = (self.visibleSize.height - insets.bottom) - itemNode.apparentFrame.maxY + itemNode.insets.top
+                                    offset += overflow
+                                    offset -= floor((self.visibleSize.height - insets.bottom - insets.top) * 0.5)
                                 }
                             }
                         case .visible:
@@ -4388,7 +4403,7 @@ open class ListView: ASDisplayNode, UIScrollViewAccessibilityDelegate, UIGesture
             if abs(apparentHeightDelta) > CGFloat.ulpOfOne {
                 itemNode.updateFrame(itemNode.frame, within: self.visibleSize)
                 
-                let visualInsets = self.visualInsets ?? self.insets
+                let visualInsets = self.dynamicVisualInsets?() ?? self.visualInsets ?? self.insets
                 
                 if itemNode.apparentFrame.maxY <= visualInsets.top {
                     offsetRanges.offset(IndexRange(first: 0, last: index), offset: -apparentHeightDelta)
@@ -4659,6 +4674,14 @@ open class ListView: ASDisplayNode, UIScrollViewAccessibilityDelegate, UIGesture
     public func forEachItemNode(_ f: (ASDisplayNode) -> Void) {
         for itemNode in self.itemNodes {
             if itemNode.index != nil {
+                f(itemNode)
+            }
+        }
+    }
+    
+    public func forEachRemovedItemNode(_ f: (ASDisplayNode) -> Void) {
+        for itemNode in self.itemNodes {
+            if itemNode.index == nil {
                 f(itemNode)
             }
         }
@@ -5026,6 +5049,10 @@ open class ListView: ASDisplayNode, UIScrollViewAccessibilityDelegate, UIGesture
                 scrollDirection = self.rotated ? .down : .up
         }
         return self.scrollWithDirection(scrollDirection, distance: distance)
+    }
+    
+    open func customItemDeleteAnimationDuration(itemNode: ListViewItemNode) -> Double? {
+        return nil
     }
 }
 

@@ -19,7 +19,6 @@ import InAppPurchaseManager
 import ConfettiEffect
 import TextFormat
 import UniversalMediaPlayer
-import AttachmentUI
 
 public enum PremiumGiftSource: Equatable {
     case profile
@@ -329,21 +328,23 @@ private final class PremiumGiftScreenContentComponent: CombinedComponent {
             state.price = price
             
             let gradientColors: [UIColor] = [
-                UIColor(rgb: 0xF27C30),
-                UIColor(rgb: 0xE36850),
-                UIColor(rgb: 0xda5d63),
-                UIColor(rgb: 0xD15078),
-                UIColor(rgb: 0xC14998),
-                UIColor(rgb: 0xB24CB5),
-                UIColor(rgb: 0xA34ED0),
-                UIColor(rgb: 0x9054E9),
-                UIColor(rgb: 0x7561EB),
-                UIColor(rgb: 0x5A6EEE),
-                UIColor(rgb: 0x548DFF),
-                UIColor(rgb: 0x54A3FF),
-                UIColor(rgb: 0x54bdff),
-                UIColor(rgb: 0x71c8ff),
-                UIColor(rgb: 0xa0daff)
+                UIColor(rgb: 0xef6922),
+                UIColor(rgb: 0xe95a2c),
+                UIColor(rgb: 0xe74e33),
+                UIColor(rgb: 0xe3433c),
+                UIColor(rgb: 0xdb374b),
+                UIColor(rgb: 0xcb3e6d),
+                UIColor(rgb: 0xbc4395),
+                UIColor(rgb: 0xab4ac4),
+                UIColor(rgb: 0x9b4fed),
+                UIColor(rgb: 0x8958ff),
+                UIColor(rgb: 0x676bff),
+                UIColor(rgb: 0x5b79ff),
+                UIColor(rgb: 0x4492ff),
+                UIColor(rgb: 0x429bd5),
+                UIColor(rgb: 0x41a6a5),
+                UIColor(rgb: 0x3eb26d),
+                UIColor(rgb: 0x3dbd4a)
             ]
             
             i = 0
@@ -402,6 +403,10 @@ private final class PremiumGiftScreenContentComponent: CombinedComponent {
                             demoSubject = .translation
                         case .stories:
                             demoSubject = .stories
+                        case .colors:
+                            demoSubject = .colors
+                        case .wallpapers:
+                            demoSubject = .wallpapers
                         }
                         
                         let buttonText: String
@@ -670,11 +675,13 @@ private final class PremiumGiftScreenComponent: CombinedComponent {
             self.updateInProgress(true)
             self.updated(transition: .immediate)
             
-            let _ = (self.context.engine.payments.canPurchasePremium(purpose: .gift(peerId: self.peerId, currency: currency, amount: amount))
+            let purpose: AppStoreTransactionPurpose = .gift(peerId: self.peerId, currency: currency, amount: amount)
+            let _ = (self.context.engine.payments.canPurchasePremium(purpose: purpose)
             |> deliverOnMainQueue).start(next: { [weak self] available in
                 if let strongSelf = self {
+                    let presentationData = strongSelf.context.sharedContext.currentPresentationData.with { $0 }
                     if available {
-                        strongSelf.paymentDisposable.set((inAppPurchaseManager.buyProduct(product.storeProduct, targetPeerId: strongSelf.peerId)
+                        strongSelf.paymentDisposable.set((inAppPurchaseManager.buyProduct(product.storeProduct, purpose: purpose)
                         |> deliverOnMainQueue).start(next: { [weak self] status in
                             if let strongSelf = self, case .purchased = status {
                                 Queue.mainQueue().after(2.0) {
@@ -692,7 +699,6 @@ private final class PremiumGiftScreenComponent: CombinedComponent {
                                 strongSelf.updateInProgress(false)
                                 strongSelf.updated(transition: .immediate)
 
-                                let presentationData = strongSelf.context.sharedContext.currentPresentationData.with { $0 }
                                 var errorText: String?
                                 switch error {
                                     case .generic:
@@ -991,7 +997,7 @@ private final class PremiumGiftScreenComponent: CombinedComponent {
     }
 }
 
-public final class PremiumGiftScreen: ViewControllerComponentContainer, AttachmentContainable {
+open class PremiumGiftScreen: ViewControllerComponentContainer {
     fileprivate let context: AccountContext
     
     private var didSetReady = false
@@ -1004,7 +1010,9 @@ public final class PremiumGiftScreen: ViewControllerComponentContainer, Attachme
     public weak var containerView: UIView?
     public var animationColor: UIColor?
     
-    fileprivate let mainButtonStatePromise = Promise<AttachmentMainButtonState?>(nil)
+    public var updateTabBarAlpha: (CGFloat, ContainedViewLayoutTransition) -> Void = { _, _ in }
+    
+    public let mainButtonStatePromise = Promise<AttachmentMainButtonState?>(nil)
     private let mainButtonActionSlot = ActionSlot<Void>()
     
     public init(context: AccountContext, peerId: PeerId, options: [CachedPremiumGiftOption], source: PremiumGiftSource, pushController: @escaping (ViewController) -> Void, completion: @escaping () -> Void) {
@@ -1091,55 +1099,7 @@ public final class PremiumGiftScreen: ViewControllerComponentContainer, Attachme
         }
     }
     
-    @objc fileprivate func mainButtonPressed() {
+    @objc public func mainButtonPressed() {
         self.mainButtonActionSlot.invoke(Void())
-    }
-    
-    public var requestAttachmentMenuExpansion: () -> Void = {}
-    public var updateNavigationStack: (@escaping ([AttachmentContainable]) -> ([AttachmentContainable], AttachmentMediaPickerContext?)) -> Void = { _ in }
-    public var updateTabBarAlpha: (CGFloat, ContainedViewLayoutTransition) -> Void = { _, _ in }
-    public var cancelPanGesture: () -> Void = { }
-    public var isContainerPanning: () -> Bool = { return false }
-    public var isContainerExpanded: () -> Bool = { return false }
-    
-    public var mediaPickerContext: AttachmentMediaPickerContext? {
-        return PremiumGiftContext(controller: self)
-    }
-}
-
-private final class PremiumGiftContext: AttachmentMediaPickerContext {
-    private weak var controller: PremiumGiftScreen?
-    
-    var selectionCount: Signal<Int, NoError> {
-        return .single(0)
-    }
-    
-    var caption: Signal<NSAttributedString?, NoError> {
-        return .single(nil)
-    }
-    
-    public var loadingProgress: Signal<CGFloat?, NoError> {
-        return .single(nil)
-    }
-    
-    public var mainButtonState: Signal<AttachmentMainButtonState?, NoError> {
-        return self.controller?.mainButtonStatePromise.get() ?? .single(nil)
-    }
-    
-    init(controller: PremiumGiftScreen) {
-        self.controller = controller
-    }
-            
-    func setCaption(_ caption: NSAttributedString) {
-    }
-    
-    func send(mode: AttachmentMediaPickerSendMode, attachmentMode: AttachmentMediaPickerAttachmentMode) {
-    }
-    
-    func schedule() {
-    }
-    
-    func mainButtonAction() {
-        self.controller?.mainButtonPressed()
     }
 }

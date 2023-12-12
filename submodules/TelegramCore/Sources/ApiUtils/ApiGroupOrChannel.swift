@@ -61,7 +61,7 @@ func parseTelegramGroupOrChannel(chat: Api.Chat) -> Peer? {
         return TelegramGroup(id: PeerId(namespace: Namespaces.Peer.CloudGroup, id: PeerId.Id._internalFromInt64Value(id)), title: "", photo: [], participantCount: 0, role: .member, membership: .Removed, flags: [], defaultBannedRights: nil, migrationReference: nil, creationDate: 0, version: 0)
     case let .chatForbidden(id, title):
         return TelegramGroup(id: PeerId(namespace: Namespaces.Peer.CloudGroup, id: PeerId.Id._internalFromInt64Value(id)), title: title, photo: [], participantCount: 0, role: .member, membership: .Removed, flags: [], defaultBannedRights: nil, migrationReference: nil, creationDate: 0, version: 0)
-    case let .channel(flags, _, id, accessHash, title, username, photo, date, restrictionReason, adminRights, bannedRights, defaultBannedRights, _, usernames):
+    case let .channel(flags, flags2, id, accessHash, title, username, photo, date, restrictionReason, adminRights, bannedRights, defaultBannedRights, _, usernames, _, color):
         let isMin = (flags & (1 << 12)) != 0
         
         let participationStatus: TelegramChannelParticipationStatus
@@ -128,6 +128,15 @@ func parseTelegramGroupOrChannel(chat: Api.Chat) -> Peer? {
         if (flags & Int32(1 << 30)) != 0 {
             channelFlags.insert(.isForum)
         }
+        
+        var storiesHidden: Bool?
+        if flags2 & (1 << 2) == 0 { // stories_hidden_min
+            if flags2 & (1 << 1) != 0 {
+                storiesHidden = true
+            } else if !isMin {
+                storiesHidden = false
+            }
+        }
 
         let restrictionInfo: PeerAccessRestrictionInfo?
         if let restrictionReason = restrictionReason {
@@ -144,7 +153,17 @@ func parseTelegramGroupOrChannel(chat: Api.Chat) -> Peer? {
             }
         }
         
-        return TelegramChannel(id: PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(id)), accessHash: accessHashValue, title: title, username: username, photo: imageRepresentationsForApiChatPhoto(photo), creationDate: date, version: 0, participationStatus: participationStatus, info: info, flags: channelFlags, restrictionInfo: restrictionInfo, adminRights: adminRights.flatMap(TelegramChatAdminRights.init), bannedRights: bannedRights.flatMap(TelegramChatBannedRights.init), defaultBannedRights: defaultBannedRights.flatMap(TelegramChatBannedRights.init), usernames: usernames?.map(TelegramPeerUsername.init(apiUsername:)) ?? [])
+        var nameColor: Int32?
+        var backgroundEmojiId: Int64?
+        if let color = color {
+            switch color {
+            case let .peerColor(_, color, backgroundEmojiIdValue):
+                nameColor = color
+                backgroundEmojiId = backgroundEmojiIdValue
+            }
+        }
+        
+        return TelegramChannel(id: PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(id)), accessHash: accessHashValue, title: title, username: username, photo: imageRepresentationsForApiChatPhoto(photo), creationDate: date, version: 0, participationStatus: participationStatus, info: info, flags: channelFlags, restrictionInfo: restrictionInfo, adminRights: adminRights.flatMap(TelegramChatAdminRights.init), bannedRights: bannedRights.flatMap(TelegramChatBannedRights.init), defaultBannedRights: defaultBannedRights.flatMap(TelegramChatBannedRights.init), usernames: usernames?.map(TelegramPeerUsername.init(apiUsername:)) ?? [], storiesHidden: storiesHidden, nameColor: nameColor.flatMap { PeerNameColor(rawValue: $0) }, backgroundEmojiId: backgroundEmojiId, profileColor: nil, profileBackgroundEmojiId: nil)
     case let .channelForbidden(flags, id, accessHash, title, untilDate):
         let info: TelegramChannelInfo
         if (flags & Int32(1 << 8)) != 0 {
@@ -153,7 +172,7 @@ func parseTelegramGroupOrChannel(chat: Api.Chat) -> Peer? {
             info = .broadcast(TelegramChannelBroadcastInfo(flags: []))
         }
         
-        return TelegramChannel(id: PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(id)), accessHash: .personal(accessHash), title: title, username: nil, photo: [], creationDate: 0, version: 0, participationStatus: .kicked, info: info, flags: TelegramChannelFlags(), restrictionInfo: nil, adminRights: nil, bannedRights: TelegramChatBannedRights(flags: [.banReadMessages], untilDate: untilDate ?? Int32.max), defaultBannedRights: nil, usernames: [])
+        return TelegramChannel(id: PeerId(namespace: Namespaces.Peer.CloudChannel, id: PeerId.Id._internalFromInt64Value(id)), accessHash: .personal(accessHash), title: title, username: nil, photo: [], creationDate: 0, version: 0, participationStatus: .kicked, info: info, flags: TelegramChannelFlags(), restrictionInfo: nil, adminRights: nil, bannedRights: TelegramChatBannedRights(flags: [.banReadMessages], untilDate: untilDate ?? Int32.max), defaultBannedRights: nil, usernames: [], storiesHidden: nil, nameColor: nil, backgroundEmojiId: nil, profileColor: nil, profileBackgroundEmojiId: nil)
     }
 }
 
@@ -161,7 +180,7 @@ func mergeGroupOrChannel(lhs: Peer?, rhs: Api.Chat) -> Peer? {
     switch rhs {
         case .chat, .chatEmpty, .chatForbidden, .channelForbidden:
             return parseTelegramGroupOrChannel(chat: rhs)
-        case let .channel(flags, _, _, accessHash, title, username, photo, _, _, _, _, defaultBannedRights, _, usernames):
+        case let .channel(flags, flags2, _, accessHash, title, username, photo, _, _, _, _, defaultBannedRights, _, usernames, _, color):
             let isMin = (flags & (1 << 12)) != 0
             if accessHash != nil && !isMin {
                 return parseTelegramGroupOrChannel(chat: rhs)
@@ -194,7 +213,26 @@ func mergeGroupOrChannel(lhs: Peer?, rhs: Api.Chat) -> Peer? {
                     info = .group(TelegramChannelGroupInfo(flags: infoFlags))
                 }
                 
-                return TelegramChannel(id: lhs.id, accessHash: lhs.accessHash, title: title, username: username, photo: imageRepresentationsForApiChatPhoto(photo), creationDate: lhs.creationDate, version: lhs.version, participationStatus: lhs.participationStatus, info: info, flags: channelFlags, restrictionInfo: lhs.restrictionInfo, adminRights: lhs.adminRights, bannedRights: lhs.bannedRights, defaultBannedRights: defaultBannedRights.flatMap(TelegramChatBannedRights.init), usernames: usernames?.map(TelegramPeerUsername.init(apiUsername:)) ?? [])
+                var storiesHidden: Bool? = lhs.storiesHidden
+                if flags2 & (1 << 2) == 0 { // stories_hidden_min
+                    if flags2 & (1 << 1) != 0 {
+                        storiesHidden = true
+                    } else if !isMin {
+                        storiesHidden = false
+                    }
+                }
+                
+                var nameColorIndex: Int32?
+                var backgroundEmojiId: Int64?
+                if let color = color {
+                    switch color {
+                    case let .peerColor(_, color, backgroundEmojiIdValue):
+                        nameColorIndex = color
+                        backgroundEmojiId = backgroundEmojiIdValue
+                    }
+                }
+                
+                return TelegramChannel(id: lhs.id, accessHash: lhs.accessHash, title: title, username: username, photo: imageRepresentationsForApiChatPhoto(photo), creationDate: lhs.creationDate, version: lhs.version, participationStatus: lhs.participationStatus, info: info, flags: channelFlags, restrictionInfo: lhs.restrictionInfo, adminRights: lhs.adminRights, bannedRights: lhs.bannedRights, defaultBannedRights: defaultBannedRights.flatMap(TelegramChatBannedRights.init), usernames: usernames?.map(TelegramPeerUsername.init(apiUsername:)) ?? [], storiesHidden: storiesHidden, nameColor: nameColorIndex.flatMap { PeerNameColor(rawValue: $0) }, backgroundEmojiId: backgroundEmojiId, profileColor: nil, profileBackgroundEmojiId: nil)
             } else {
                 return parseTelegramGroupOrChannel(chat: rhs)
             }
@@ -207,7 +245,8 @@ func mergeChannel(lhs: TelegramChannel?, rhs: TelegramChannel) -> TelegramChanne
     }
     
     if case .personal? = rhs.accessHash {
-        return rhs
+        let storiesHidden: Bool? = rhs.storiesHidden ?? lhs.storiesHidden
+        return rhs.withUpdatedStoriesHidden(storiesHidden)
     }
     
     var channelFlags = lhs.flags
@@ -245,6 +284,8 @@ func mergeChannel(lhs: TelegramChannel?, rhs: TelegramChannel) -> TelegramChanne
         accessHash = rhs.accessHash ?? lhs.accessHash
     }
     
-    return TelegramChannel(id: lhs.id, accessHash: accessHash, title: rhs.title, username: rhs.username, photo: rhs.photo, creationDate: rhs.creationDate, version: rhs.version, participationStatus: lhs.participationStatus, info: info, flags: channelFlags, restrictionInfo: rhs.restrictionInfo, adminRights: rhs.adminRights, bannedRights: rhs.bannedRights, defaultBannedRights: rhs.defaultBannedRights, usernames: rhs.usernames)
+    let storiesHidden: Bool? = rhs.storiesHidden ?? lhs.storiesHidden
+    
+    return TelegramChannel(id: lhs.id, accessHash: accessHash, title: rhs.title, username: rhs.username, photo: rhs.photo, creationDate: rhs.creationDate, version: rhs.version, participationStatus: lhs.participationStatus, info: info, flags: channelFlags, restrictionInfo: rhs.restrictionInfo, adminRights: rhs.adminRights, bannedRights: rhs.bannedRights, defaultBannedRights: rhs.defaultBannedRights, usernames: rhs.usernames, storiesHidden: storiesHidden, nameColor: rhs.nameColor, backgroundEmojiId: rhs.backgroundEmojiId, profileColor: rhs.profileColor, profileBackgroundEmojiId: rhs.profileBackgroundEmojiId)
 }
 

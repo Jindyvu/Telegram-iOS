@@ -104,9 +104,11 @@ final class AccountTaskManager {
                     tasks.add(managedFeaturedStatusEmoji(postbox: self.stateManager.postbox, network: self.stateManager.network).start())
                     tasks.add(managedProfilePhotoEmoji(postbox: self.stateManager.postbox, network: self.stateManager.network).start())
                     tasks.add(managedGroupPhotoEmoji(postbox: self.stateManager.postbox, network: self.stateManager.network).start())
+                    tasks.add(managedBackgroundIconEmoji(postbox: self.stateManager.postbox, network: self.stateManager.network).start())
                     tasks.add(managedRecentReactions(postbox: self.stateManager.postbox, network: self.stateManager.network).start())
                     tasks.add(_internal_loadedStickerPack(postbox: self.stateManager.postbox, network: self.stateManager.network, reference: .iconStatusEmoji, forceActualized: true).start())
                     tasks.add(_internal_loadedStickerPack(postbox: self.stateManager.postbox, network: self.stateManager.network, reference: .iconTopicEmoji, forceActualized: true).start())
+                    tasks.add(managedPeerColorUpdates(postbox: self.stateManager.postbox, network: self.stateManager.network).start())
                     
                     self.managedTopReactionsDisposable.set(managedTopReactions(postbox: self.stateManager.postbox, network: self.stateManager.network).start())
                     

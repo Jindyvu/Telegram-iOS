@@ -4,6 +4,10 @@ import AsyncDisplayKit
 import TelegramCore
 import AccountContext
 import ChatPresentationInterfaceState
+import ChatInputPanelNode
+import ChatBotStartInputPanelNode
+import ChatChannelSubscriberInputPanelNode
+import ChatMessageSelectionInputPanelNode
 
 func inputPanelForChatPresentationIntefaceState(_ chatPresentationInterfaceState: ChatPresentationInterfaceState, context: AccountContext, currentPanel: ChatInputPanelNode?, currentSecondaryPanel: ChatInputPanelNode?, textInputPanelNode: ChatTextInputPanelNode?, interfaceInteraction: ChatPanelInterfaceInteraction?) -> (primary: ChatInputPanelNode?, secondary: ChatInputPanelNode?) {
     if let renderedPeer = chatPresentationInterfaceState.renderedPeer, renderedPeer.peer?.restrictionText(platform: "ios", contentSettings: context.currentContentSettings.with { $0 }) != nil {
@@ -13,7 +17,7 @@ func inputPanelForChatPresentationIntefaceState(_ chatPresentationInterfaceState
         return (nil, nil)
     }
     
-    if case .forwardedMessages = chatPresentationInterfaceState.subject {
+    if case .messageOptions = chatPresentationInterfaceState.subject {
         return (nil, nil)
     }
     
@@ -182,7 +186,7 @@ func inputPanelForChatPresentationIntefaceState(_ chatPresentationInterfaceState
                             }
                         }
                     }
-                } else if let isGeneralThreadClosed = chatPresentationInterfaceState.isGeneralThreadClosed, isGeneralThreadClosed && chatPresentationInterfaceState.interfaceState.replyMessageId == nil {
+                } else if let isGeneralThreadClosed = chatPresentationInterfaceState.isGeneralThreadClosed, isGeneralThreadClosed && chatPresentationInterfaceState.interfaceState.replyMessageSubject == nil {
                     if !canManage {
                         if let currentPanel = (currentPanel as? ChatRestrictedInputPanelNode) ?? (currentSecondaryPanel as? ChatRestrictedInputPanelNode) {
                             return (currentPanel, nil)
@@ -192,6 +196,15 @@ func inputPanelForChatPresentationIntefaceState(_ chatPresentationInterfaceState
                             panel.interfaceInteraction = interfaceInteraction
                             return (panel, nil)
                         }
+                    }
+                } else if let replyMessage = chatPresentationInterfaceState.replyMessage, let threadInfo = replyMessage.associatedThreadInfo, threadInfo.isClosed {
+                    if let currentPanel = (currentPanel as? ChatRestrictedInputPanelNode) ?? (currentSecondaryPanel as? ChatRestrictedInputPanelNode) {
+                        return (currentPanel, nil)
+                    } else {
+                        let panel = ChatRestrictedInputPanelNode()
+                        panel.context = context
+                        panel.interfaceInteraction = interfaceInteraction
+                        return (panel, nil)
                     }
                 }
             }
@@ -253,7 +266,7 @@ func inputPanelForChatPresentationIntefaceState(_ chatPresentationInterfaceState
             if channel.flags.contains(.isForum) {
                 /*if let _ = chatPresentationInterfaceState.threadData {
                 } else {
-                    if chatPresentationInterfaceState.interfaceState.replyMessageId == nil {
+                    if chatPresentationInterfaceState.interfaceState.replyMessageSubject == nil {
                         if let currentPanel = (currentPanel as? ChatRestrictedInputPanelNode) ?? (currentSecondaryPanel as? ChatRestrictedInputPanelNode) {
                             return (currentPanel, nil)
                         } else {

@@ -7,6 +7,7 @@ import MetalKit
 import Display
 import SwiftSignalKit
 import TelegramCore
+import Postbox
 
 public func mediaEditorGenerateGradientImage(size: CGSize, colors: [UIColor]) -> UIImage? {
     UIGraphicsBeginImageContextWithOptions(size, false, 1.0)
@@ -25,17 +26,43 @@ public func mediaEditorGenerateGradientImage(size: CGSize, colors: [UIColor]) ->
     return image
 }
 
-public func mediaEditorGetGradientColors(from image: UIImage) -> (UIColor, UIColor) {
+public func mediaEditorGetGradientColors(from image: UIImage) -> MediaEditor.GradientColors {
     let context = DrawingContext(size: CGSize(width: 5.0, height: 5.0), scale: 1.0, clear: false)!
     context.withFlippedContext({ context in
         if let cgImage = image.cgImage {
             context.draw(cgImage, in: CGRect(x: 0.0, y: 0.0, width: 5.0, height: 5.0))
         }
     })
-    return (context.colorAt(CGPoint(x: 2.0, y: 0.0)), context.colorAt(CGPoint(x: 2.0, y: 4.0)))
+    return MediaEditor.GradientColors(
+        top: context.colorAt(CGPoint(x: 2.0, y: 0.0)),
+        bottom: context.colorAt(CGPoint(x: 2.0, y: 4.0))
+    )
 }
 
 final class MediaEditorComposer {
+    enum Input {
+        case texture(MTLTexture, CMTime)
+        case videoBuffer(VideoPixelBuffer)
+        
+        var timestamp: CMTime {
+            switch self {
+            case let .texture(_, timestamp):
+                return timestamp
+            case let .videoBuffer(videoBuffer):
+                return videoBuffer.timestamp
+            }
+        }
+        
+        var rendererInput: MediaEditorRenderer.Input {
+            switch self {
+            case let .texture(texture, time):
+                return .texture(texture, time)
+            case let .videoBuffer(videoBuffer):
+                return .videoBuffer(videoBuffer)
+            }
+        }
+    }
+    
     let device: MTLDevice?
     private let colorSpace: CGColorSpace
     
@@ -50,11 +77,18 @@ final class MediaEditorComposer {
     private let renderer = MediaEditorRenderer()
     private let renderChain = MediaEditorRenderChain()
     
-    private let gradientImage: CIImage
     private let drawingImage: CIImage?
     private var entities: [MediaEditorComposerEntity]
     
-    init(account: Account, values: MediaEditorValues, dimensions: CGSize, outputDimensions: CGSize, textScale: CGFloat) {
+    init(
+        postbox: Postbox,
+        values: MediaEditorValues,
+        dimensions: CGSize,
+        outputDimensions: CGSize,
+        textScale: CGFloat,
+        videoDuration: Double?,
+        additionalVideoDuration: Double?
+    ) {
         self.values = values
         self.dimensions = dimensions
         self.outputDimensions = outputDimensions
@@ -65,12 +99,6 @@ final class MediaEditorComposer {
         
         self.renderer.addRenderChain(self.renderChain)
         
-        if let gradientColors = values.gradientColors, let image = mediaEditorGenerateGradientImage(size: dimensions, colors: gradientColors) {
-            self.gradientImage = CIImage(image: image, options: [.colorSpace: self.colorSpace])!.transformed(by: CGAffineTransform(translationX: -dimensions.width / 2.0, y: -dimensions.height / 2.0))
-        } else {
-            self.gradientImage = CIImage(color: .black)
-        }
-        
         if let drawing = values.drawing, let drawingImage = CIImage(image: drawing, options: [.colorSpace: self.colorSpace]) {
             self.drawingImage = drawingImage.transformed(by: CGAffineTransform(translationX: -dimensions.width / 2.0, y: -dimensions.height / 2.0))
         } else {
@@ -79,7 +107,7 @@ final class MediaEditorComposer {
         
         var entities: [MediaEditorComposerEntity] = []
         for entity in values.entities {
-            entities.append(contentsOf: composerEntitiesForDrawingEntity(account: account, textScale: textScale, entity: entity.entity, colorSpace: colorSpace))
+            entities.append(contentsOf: composerEntitiesForDrawingEntity(postbox: postbox, textScale: textScale, entity: entity.entity, colorSpace: colorSpace))
         }
         self.entities = entities
         
@@ -94,74 +122,39 @@ final class MediaEditorComposer {
                 
         self.renderer.setupForComposer(composer: self)
         self.renderChain.update(values: self.values)
-        self.renderer.videoFinishPass.update(values: self.values)
+        self.renderer.videoFinishPass.update(values: self.values, videoDuration: videoDuration, additionalVideoDuration: additionalVideoDuration)
     }
-    
-    func processSampleBuffer(sampleBuffer: CMSampleBuffer, textureRotation: TextureRotation, additionalSampleBuffer: CMSampleBuffer?, additionalTextureRotation: TextureRotation, pool: CVPixelBufferPool?, completion: @escaping (CVPixelBuffer?) -> Void) {
-        guard let imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer), let pool = pool else {
+        
+    var previousAdditionalInput: Input?
+    func process(main: Input, additional: Input?, pool: CVPixelBufferPool?, completion: @escaping (CVPixelBuffer?) -> Void) {
+        guard let pool, let ciContext = self.ciContext else {
             completion(nil)
             return
         }
-        let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         
-        let mainPixelBuffer = VideoPixelBuffer(pixelBuffer: imageBuffer, rotation: textureRotation, timestamp: time)
-        var additionalPixelBuffer: VideoPixelBuffer?
-        if let additionalSampleBuffer, let additionalImageBuffer = CMSampleBufferGetImageBuffer(additionalSampleBuffer) {
-            additionalPixelBuffer = VideoPixelBuffer(pixelBuffer: additionalImageBuffer, rotation: additionalTextureRotation, timestamp: time)
+        var additional = additional
+        if let additional {
+            self.previousAdditionalInput = additional
+        } else {
+            additional = self.previousAdditionalInput
         }
-        self.renderer.consumeVideoPixelBuffer(pixelBuffer: mainPixelBuffer, additionalPixelBuffer: additionalPixelBuffer, render: true)
         
-        if let finalTexture = self.renderer.finalTexture, var ciImage = CIImage(mtlTexture: finalTexture, options: [.colorSpace: self.colorSpace]) {
+        self.renderer.consume(main: main.rendererInput, additional: additional?.rendererInput, render: true)
+        
+        if let resultTexture = self.renderer.resultTexture, var ciImage = CIImage(mtlTexture: resultTexture, options: [.colorSpace: self.colorSpace]) {
             ciImage = ciImage.transformed(by: CGAffineTransformMakeScale(1.0, -1.0).translatedBy(x: 0.0, y: -ciImage.extent.height))
             
             var pixelBuffer: CVPixelBuffer?
             CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pixelBuffer)
             
             if let pixelBuffer {
-                processImage(inputImage: ciImage, time: time, completion: { compositedImage in
-                    if var compositedImage {
-                        let scale = self.outputDimensions.width / self.dimensions.width
-                        compositedImage = compositedImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
- 
-                        self.ciContext?.render(compositedImage, to: pixelBuffer)
-                        completion(pixelBuffer)
-                    } else {
-                        completion(nil)
-                    }
-                })
-                return
-            }
-        }
-        completion(nil)
-    }
-    
-    private var filteredImage: CIImage?
-    func processImage(inputImage: UIImage, pool: CVPixelBufferPool?, time: CMTime, completion: @escaping (CVPixelBuffer?) -> Void) {
-        guard let pool else {
-            completion(nil)
-            return
-        }
-        if self.filteredImage == nil, let device = self.device {
-            if let texture = loadTexture(image: inputImage, device: device) {
-                self.renderer.consumeTexture(texture, render: true)
+                let time = main.timestamp
                 
-                if let finalTexture = self.renderer.finalTexture, var ciImage = CIImage(mtlTexture: finalTexture, options: [.colorSpace: self.colorSpace]) {
-                    ciImage = ciImage.transformed(by: CGAffineTransformMakeScale(1.0, -1.0).translatedBy(x: 0.0, y: -ciImage.extent.height))
-                    self.filteredImage = ciImage
-                }
-            }
-        }
-        
-        if let image = self.filteredImage {
-            var pixelBuffer: CVPixelBuffer?
-            CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, pool, &pixelBuffer)
-            
-            if let pixelBuffer, let context = self.ciContext {
-                makeEditorImageFrameComposition(context: context, inputImage: image, gradientImage: self.gradientImage, drawingImage: self.drawingImage, dimensions: self.dimensions, outputDimensions: self.outputDimensions, values: self.values, entities: self.entities, time: time, completion: { compositedImage in
+                makeEditorImageFrameComposition(context: ciContext, inputImage: ciImage, drawingImage: self.drawingImage, dimensions: self.dimensions, outputDimensions: self.outputDimensions, values: self.values, entities: self.entities, time: time, completion: { compositedImage in
                     if var compositedImage {
-                        let scale = self.outputDimensions.width / self.dimensions.width
+                        let scale = self.outputDimensions.width / compositedImage.extent.width
                         compositedImage = compositedImage.samplingLinear().transformed(by: CGAffineTransform(scaleX: scale, y: scale))
-                        
+
                         self.ciContext?.render(compositedImage, to: pixelBuffer)
                         completion(pixelBuffer)
                     } else {
@@ -174,24 +167,23 @@ final class MediaEditorComposer {
         completion(nil)
     }
     
-    func processImage(inputImage: CIImage, time: CMTime, completion: @escaping (CIImage?) -> Void) {
-        guard let context = self.ciContext else {
-            return
+    private var cachedTexture: MTLTexture?
+    func textureForImage(_ image: UIImage) -> MTLTexture? {
+        if let cachedTexture = self.cachedTexture {
+            return cachedTexture
         }
-        makeEditorImageFrameComposition(context: context, inputImage: inputImage, gradientImage: self.gradientImage, drawingImage: self.drawingImage, dimensions: self.dimensions, outputDimensions: self.outputDimensions, values: self.values, entities: self.entities, time: time, textScale: self.textScale, completion: completion)
+        if let device = self.device, let texture = loadTexture(image: image, device: device) {
+            self.cachedTexture = texture
+            return texture
+        }
+        return nil
     }
 }
 
-public func makeEditorImageComposition(context: CIContext, account: Account, inputImage: UIImage, dimensions: CGSize, values: MediaEditorValues, time: CMTime, textScale: CGFloat, completion: @escaping (UIImage?) -> Void) {
+public func makeEditorImageComposition(context: CIContext, postbox: Postbox, inputImage: UIImage, dimensions: CGSize, values: MediaEditorValues, time: CMTime, textScale: CGFloat, completion: @escaping (UIImage?) -> Void) {
     let colorSpace = CGColorSpaceCreateDeviceRGB()
     let inputImage = CIImage(image: inputImage, options: [.colorSpace: colorSpace])!
-    let gradientImage: CIImage
     var drawingImage: CIImage?
-    if let gradientColors = values.gradientColors, let image = mediaEditorGenerateGradientImage(size: dimensions, colors: gradientColors) {
-        gradientImage = CIImage(image: image, options: [.colorSpace: colorSpace])!.transformed(by: CGAffineTransform(translationX: -dimensions.width / 2.0, y: -dimensions.height / 2.0))
-    } else {
-        gradientImage = CIImage(color: .black)
-    }
     
     if let drawing = values.drawing, let image = CIImage(image: drawing, options: [.colorSpace: colorSpace]) {
         drawingImage = image.transformed(by: CGAffineTransform(translationX: -dimensions.width / 2.0, y: -dimensions.height / 2.0))
@@ -199,10 +191,10 @@ public func makeEditorImageComposition(context: CIContext, account: Account, inp
     
     var entities: [MediaEditorComposerEntity] = []
     for entity in values.entities {
-        entities.append(contentsOf: composerEntitiesForDrawingEntity(account: account, textScale: textScale, entity: entity.entity, colorSpace: colorSpace))
+        entities.append(contentsOf: composerEntitiesForDrawingEntity(postbox: postbox, textScale: textScale, entity: entity.entity, colorSpace: colorSpace))
     }
     
-    makeEditorImageFrameComposition(context: context, inputImage: inputImage, gradientImage: gradientImage, drawingImage: drawingImage, dimensions: dimensions, outputDimensions: dimensions, values: values, entities: entities, time: time, textScale: textScale, completion: { ciImage in
+    makeEditorImageFrameComposition(context: context, inputImage: inputImage, drawingImage: drawingImage, dimensions: dimensions, outputDimensions: dimensions, values: values, entities: entities, time: time, textScale: textScale, completion: { ciImage in
         if let ciImage {
             if let cgImage = context.createCGImage(ciImage, from: CGRect(origin: .zero, size: ciImage.extent.size)) {
                 Queue.mainQueue().async {
@@ -215,24 +207,28 @@ public func makeEditorImageComposition(context: CIContext, account: Account, inp
     })
 }
 
-private func makeEditorImageFrameComposition(context: CIContext, inputImage: CIImage, gradientImage: CIImage, drawingImage: CIImage?, dimensions: CGSize, outputDimensions: CGSize, values: MediaEditorValues, entities: [MediaEditorComposerEntity], time: CMTime, textScale: CGFloat = 1.0, completion: @escaping (CIImage?) -> Void) {
+private func makeEditorImageFrameComposition(context: CIContext, inputImage: CIImage, drawingImage: CIImage?, dimensions: CGSize, outputDimensions: CGSize, values: MediaEditorValues, entities: [MediaEditorComposerEntity], time: CMTime, textScale: CGFloat = 1.0, completion: @escaping (CIImage?) -> Void) {
     var resultImage = CIImage(color: .black).cropped(to: CGRect(origin: .zero, size: dimensions)).transformed(by: CGAffineTransform(translationX: -dimensions.width / 2.0, y: -dimensions.height / 2.0))
-    resultImage = gradientImage.composited(over: resultImage)
     
     var mediaImage = inputImage.samplingLinear().transformed(by: CGAffineTransform(translationX: -inputImage.extent.midX, y: -inputImage.extent.midY))
     
     var initialScale: CGFloat
-    if mediaImage.extent.height > mediaImage.extent.width {
+    if mediaImage.extent.height > mediaImage.extent.width && values.isStory {
         initialScale = max(dimensions.width / mediaImage.extent.width, dimensions.height / mediaImage.extent.height)
     } else {
         initialScale = dimensions.width / mediaImage.extent.width
     }
     
-    var cropTransform = CGAffineTransform(translationX: values.cropOffset.x, y: values.cropOffset.y * -1.0)
-    cropTransform = cropTransform.rotated(by: -values.cropRotation)
-    cropTransform = cropTransform.scaledBy(x: initialScale * values.cropScale, y: initialScale * values.cropScale)
-    mediaImage = mediaImage.transformed(by: cropTransform)
-    resultImage = mediaImage.composited(over: resultImage)
+    if values.isStory {
+        resultImage = mediaImage.samplingLinear().composited(over: resultImage)
+    } else {
+        var horizontalScale = initialScale
+        if values.cropMirroring {
+            horizontalScale *= -1.0
+        }
+        mediaImage = mediaImage.transformed(by: CGAffineTransformMakeScale(horizontalScale, initialScale))
+        resultImage = mediaImage.composited(over: resultImage)
+    }
     
     if let drawingImage {
         resultImage = drawingImage.samplingLinear().composited(over: resultImage)
@@ -253,7 +249,26 @@ private func makeEditorImageFrameComposition(context: CIContext, inputImage: CII
             }
             
             resultImage = resultImage.transformed(by: CGAffineTransform(translationX: dimensions.width / 2.0, y: dimensions.height / 2.0))
-            resultImage = resultImage.cropped(to: CGRect(origin: .zero, size: dimensions))
+            if values.isStory {
+                resultImage = resultImage.cropped(to: CGRect(origin: .zero, size: dimensions))
+            } else {
+                let originalDimensions = values.originalDimensions.cgSize
+                var cropRect = values.cropRect ?? .zero
+                if cropRect.isEmpty {
+                    cropRect = CGRect(origin: .zero, size: originalDimensions)
+                }
+                let scale = dimensions.width / originalDimensions.width
+                let scaledCropRect = CGRect(origin: CGPoint(x: cropRect.minX * scale, y: dimensions.height - cropRect.maxY * scale), size: CGSize(width: cropRect.width * scale, height: cropRect.height * scale))
+                resultImage = resultImage.cropped(to: scaledCropRect)
+                resultImage = resultImage.transformed(by: CGAffineTransformMakeTranslation(-scaledCropRect.minX, -scaledCropRect.minY))
+                
+                if let orientation = values.cropOrientation, orientation != .up {
+                    let rotation = orientation.rotation
+                    resultImage = resultImage.transformed(by: CGAffineTransformMakeTranslation(-resultImage.extent.width / 2.0, -resultImage.extent.height / 2.0))
+                    resultImage = resultImage.transformed(by: CGAffineTransformMakeRotation(rotation))
+                    resultImage = resultImage.transformed(by: CGAffineTransformMakeTranslation(resultImage.extent.width / 2.0, resultImage.extent.height / 2.0))
+                }
+            }
             completion(resultImage)
         }
     }
@@ -272,7 +287,6 @@ private func makeEditorImageFrameComposition(context: CIContext, inputImage: CII
                 if let scale = entity.baseScale {
                     baseScale = scale
                 } else if let _ = entity.baseDrawingSize {
-//                    baseScale = textScale
                 } else if let baseSize = entity.baseSize {
                     baseScale = baseSize.width / image.extent.width
                 }

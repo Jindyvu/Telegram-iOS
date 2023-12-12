@@ -20,13 +20,16 @@ import TelegramNotices
 import AuthenticationServices
 import Markdown
 import AlertUI
+import ObjectiveC
+
+private var ObjCKey_Delegate: Int?
 
 private enum InnerState: Equatable {
     case state(UnauthorizedAccountStateContents)
     case authorized
 }
 
-public final class AuthorizationSequenceController: NavigationController, MFMailComposeViewControllerDelegate, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
+public final class AuthorizationSequenceController: NavigationController, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
     static func navigationBarTheme(_ theme: PresentationTheme) -> NavigationBarTheme {
         return NavigationBarTheme(buttonColor: theme.intro.accentTextColor, disabledButtonColor: theme.intro.disabledTextColor, primaryTextColor: theme.intro.primaryTextColor, backgroundColor: .clear, enableBackgroundBlur: false, separatorColor: .clear, badgeBackgroundColor: theme.rootController.navigationBar.badgeBackgroundColor, badgeStrokeColor: theme.rootController.navigationBar.badgeStrokeColor, badgeTextColor: theme.rootController.navigationBar.badgeTextColor)
     }
@@ -82,9 +85,9 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
             }
         }
         |> distinctUntilChanged
-        |> deliverOnMainQueue).start(next: { [weak self] state in
+        |> deliverOnMainQueue).startStrict(next: { [weak self] state in
             self?.updateState(state: state)
-        })
+        }).strict()
     }
     
     required public init(coder aDecoder: NSCoder) {
@@ -124,7 +127,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                     
                     let countryCode = AuthorizationSequenceController.defaultCountryCode()
                     
-                    let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: isTestingEnvironment, masterDatacenterId: masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).start()
+                    let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: isTestingEnvironment, masterDatacenterId: masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).startStandalone()
                 }
             }
         }
@@ -152,9 +155,9 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                 if !strongSelf.otherAccountPhoneNumbers.1.isEmpty {
                     let _ = (strongSelf.sharedContext.accountManager.transaction { transaction -> Void in
                         transaction.removeAuth()
-                    }).start()
+                    }).startStandalone()
                 } else {
-                    let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .empty)).start()
+                    let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .empty)).startStandalone()
                 }
             })
             if let splashController = splashController {
@@ -175,14 +178,14 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                 |> take(1)
                 |> timeout(2.0, queue: .mainQueue(), alternate: .single(nil))
                 let _ = (authorizationPushConfiguration
-                |> deliverOnMainQueue).start(next: { [weak self] authorizationPushConfiguration in
+                |> deliverOnMainQueue).startStandalone(next: { [weak self] authorizationPushConfiguration in
                     if let strongSelf = self {
                         strongSelf.actionDisposable.set((sendAuthorizationCode(accountManager: strongSelf.sharedContext.accountManager, account: strongSelf.account, phoneNumber: number, apiId: strongSelf.apiId, apiHash: strongSelf.apiHash, pushNotificationConfiguration: authorizationPushConfiguration, firebaseSecretStream: strongSelf.sharedContext.firebaseSecretStream, syncContacts: syncContacts, forcedPasswordSetupNotice: { value in
                             guard let entry = CodableEntry(ApplicationSpecificCounterNotice(value: value)) else {
                                 return nil
                             }
                             return (ApplicationSpecificNotice.forcedPasswordSetupKey(), entry)
-                        }) |> deliverOnMainQueue).start(next: { [weak self] result in
+                        }) |> deliverOnMainQueue).startStrict(next: { [weak self] result in
                             if let strongSelf = self {
                                 switch result {
                                 case let .sentCode(account):
@@ -216,7 +219,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                                             let carrier = CTCarrier()
                                             let mnc = carrier.mobileNetworkCode ?? "none"
                                             
-                                            strongSelf.presentEmailComposeController(address: "login@stel.com", subject: strongSelf.presentationData.strings.Login_InvalidPhoneEmailSubject(formattedNumber).string, body: strongSelf.presentationData.strings.Login_InvalidPhoneEmailBody(formattedNumber, appVersion, systemVersion, locale, mnc).string, from: controller)
+                                            AuthorizationSequenceController.presentEmailComposeController(address: "login@stel.com", subject: strongSelf.presentationData.strings.Login_InvalidPhoneEmailSubject(formattedNumber).string, body: strongSelf.presentationData.strings.Login_InvalidPhoneEmailBody(formattedNumber, appVersion, systemVersion, locale, mnc).string, from: controller, presentationData: strongSelf.presentationData)
                                         }))
                                     case .phoneLimitExceeded:
                                         text = strongSelf.presentationData.strings.Login_PhoneFloodError
@@ -242,7 +245,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                                             let carrier = CTCarrier()
                                             let mnc = carrier.mobileNetworkCode ?? "none"
                                             
-                                            strongSelf.presentEmailComposeController(address: "login@stel.com", subject: strongSelf.presentationData.strings.Login_PhoneBannedEmailSubject(formattedNumber).string, body: strongSelf.presentationData.strings.Login_PhoneBannedEmailBody(formattedNumber, appVersion, systemVersion, locale, mnc).string, from: controller)
+                                            AuthorizationSequenceController.presentEmailComposeController(address: "login@stel.com", subject: strongSelf.presentationData.strings.Login_PhoneBannedEmailSubject(formattedNumber).string, body: strongSelf.presentationData.strings.Login_PhoneBannedEmailBody(formattedNumber, appVersion, systemVersion, locale, mnc).string, from: controller, presentationData: strongSelf.presentationData)
                                         }))
                                     case let .generic(info):
                                         text = strongSelf.presentationData.strings.Login_UnknownError
@@ -264,7 +267,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                                                 errorString = "unknown"
                                             }
                                             
-                                            strongSelf.presentEmailComposeController(address: "login@stel.com", subject: strongSelf.presentationData.strings.Login_PhoneGenericEmailSubject(formattedNumber).string, body: strongSelf.presentationData.strings.Login_PhoneGenericEmailBody(formattedNumber, errorString, appVersion, systemVersion, locale, mnc).string, from: controller)
+                                            AuthorizationSequenceController.presentEmailComposeController(address: "login@stel.com", subject: strongSelf.presentationData.strings.Login_PhoneGenericEmailSubject(formattedNumber).string, body: strongSelf.presentationData.strings.Login_PhoneGenericEmailBody(formattedNumber, errorString, appVersion, systemVersion, locale, mnc).string, from: controller, presentationData: strongSelf.presentationData)
                                         }))
                                     case .timeout:
                                         text = strongSelf.presentationData.strings.Login_NetworkError
@@ -312,12 +315,12 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                 }
                 let countryCode = AuthorizationSequenceController.defaultCountryCode()
                 
-                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).start()
+                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).startStandalone()
             })
             controller.retryResetEmail = { [weak self] in
                 if let self {
                     self.actionDisposable.set(
-                        resetLoginEmail(account: self.account, phoneNumber: number, phoneCodeHash: phoneCodeHash).start()
+                        resetLoginEmail(account: self.account, phoneNumber: number, phoneCodeHash: phoneCodeHash).startStandalone()
                     )
                 }
             }
@@ -328,7 +331,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                     if let _ = resetPendingDate {
                         self.actionDisposable.set(
                             (resetLoginEmail(account: self.account, phoneNumber: number, phoneCodeHash: phoneCodeHash)
-                            |> deliverOnMainQueue).start(error: { [weak self] error in
+                            |> deliverOnMainQueue).startStrict(error: { [weak self] error in
                                 if let self, case .alreadyInProgress = error {
                                     let formattedNumber = formatPhoneNumber(number)
                                     let title = NSAttributedString(string: self.presentationData.strings.Login_Email_PremiumRequiredTitle, font: Font.semibold(self.presentationData.listsFontSize.baseDisplaySize), textColor: self.presentationData.theme.actionSheet.primaryTextColor)
@@ -342,7 +345,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                     } else if let resetAvailablePeriod {
                         if resetAvailablePeriod == 0 {
                             self.actionDisposable.set(
-                                resetLoginEmail(account: self.account, phoneNumber: number, phoneCodeHash: phoneCodeHash).start()
+                                resetLoginEmail(account: self.account, phoneNumber: number, phoneCodeHash: phoneCodeHash).startStrict()
                             )
                         } else {
                             let pattern = pattern.replacingOccurrences(of: "*", with: "#")
@@ -362,7 +365,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                                 }
                                 self.actionDisposable.set(
                                     (resetLoginEmail(account: self.account, phoneNumber: number, phoneCodeHash: phoneCodeHash)
-                                     |> deliverOnMainQueue).start(error: { [weak self] error in
+                                     |> deliverOnMainQueue).startStrict(error: { [weak self] error in
                                          Queue.mainQueue().async {
                                              guard let self, let controller = controller else {
                                                  return
@@ -378,7 +381,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                                              case .codeExpired:
                                                  text = self.presentationData.strings.Login_CodeExpired
                                                  let account = self.account
-                                                 let _ = TelegramEngineUnauthorized(account: self.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: account.testingEnvironment, masterDatacenterId: account.masterDatacenterId, contents: .empty)).start()
+                                                 let _ = TelegramEngineUnauthorized(account: self.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: account.testingEnvironment, masterDatacenterId: account.masterDatacenterId, contents: .empty)).startStandalone()
                                              }
                                              
                                              controller.presentInGlobalOverlay(standardTextAlertController(theme: AlertControllerTheme(presentationData: self.presentationData), title: nil, text: text, actions: [TextAlertAction(type: .defaultAction, title: self.presentationData.strings.Common_OK, action: {})]))
@@ -405,7 +408,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                     
                     if case let .email(_, _, _, _, _, setup) = type, setup, case let .emailVerification(emailCode) = authorizationCode {
                         strongSelf.actionDisposable.set(((verifyLoginEmailSetup(account: strongSelf.account, code: emailCode))
-                        |> deliverOnMainQueue).start(error: { error in
+                        |> deliverOnMainQueue).startStrict(error: { error in
                             Queue.mainQueue().async {
                                 if let strongSelf = self, let controller = controller {
                                     controller.inProgress = false
@@ -427,7 +430,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                                             case .codeExpired:
                                                 text = strongSelf.presentationData.strings.Login_CodeExpired
                                                 let account = strongSelf.account
-                                                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: account.testingEnvironment, masterDatacenterId: account.masterDatacenterId, contents: .empty)).start()
+                                                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: account.testingEnvironment, masterDatacenterId: account.masterDatacenterId, contents: .empty)).startStandalone()
                                             case .timeout:
                                                 text = strongSelf.presentationData.strings.Login_NetworkError
                                             case .invalidEmailToken:
@@ -452,7 +455,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                             }
                             return (ApplicationSpecificNotice.forcedPasswordSetupKey(), entry)
                         })
-                        |> deliverOnMainQueue).start(next: { result in
+                        |> deliverOnMainQueue).startStrict(next: { result in
                             guard let strongSelf = self else {
                                 return
                             }
@@ -474,7 +477,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                                                     guard let strongSelf = self else {
                                                         return
                                                     }
-                                                    let _ = beginSignUp(account: strongSelf.account, data: data).start()
+                                                    let _ = beginSignUp(account: strongSelf.account, data: data).startStandalone()
                                                 }), TextAlertAction(type: .genericAction, title: strongSelf.presentationData.strings.Login_TermsOfServiceDecline, action: {
                                                     dismissImpl?()
                                                     guard let strongSelf = self else {
@@ -487,7 +490,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                                                             return
                                                         }
                                                         let account = strongSelf.account
-                                                        let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: account.testingEnvironment, masterDatacenterId: account.masterDatacenterId, contents: .empty)).start()
+                                                        let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: account.testingEnvironment, masterDatacenterId: account.masterDatacenterId, contents: .empty)).startStandalone()
                                                     })]), on: .root, blockInteraction: false, completion: {})
                                                 })
                                             ], actionLayout: .vertical, dismissOnOutsideTap: true)
@@ -508,7 +511,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                                         }
                                         presentAlertImpl()
                                     } else {
-                                        let _ = beginSignUp(account: strongSelf.account, data: data).start()
+                                        let _ = beginSignUp(account: strongSelf.account, data: data).startStandalone()
                                     }
                                 case .loggedIn:
                                     controller?.animateSuccess()
@@ -535,7 +538,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                                             case .codeExpired:
                                                 text = strongSelf.presentationData.strings.Login_CodeExpired
                                                 let account = strongSelf.account
-                                                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: account.testingEnvironment, masterDatacenterId: account.masterDatacenterId, contents: .empty)).start()
+                                                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: account.testingEnvironment, masterDatacenterId: account.masterDatacenterId, contents: .empty)).startStandalone()
                                             case .invalidEmailToken:
                                                 text = strongSelf.presentationData.strings.Login_InvalidEmailTokenError
                                             case .invalidEmailAddress:
@@ -558,31 +561,13 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
         controller.requestNextOption = { [weak self, weak controller] in
             if let strongSelf = self {
                 if nextType == nil {
-                    if MFMailComposeViewController.canSendMail(), let controller = controller {
-                        let formattedNumber = formatPhoneNumber(number)
-                        
-                        var emailBody = ""
-                        emailBody.append(strongSelf.presentationData.strings.Login_EmailCodeBody(formattedNumber).string)
-                        emailBody.append("\n\n")
-                        
-                        let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown"
-                        let systemVersion = UIDevice.current.systemVersion
-                        let locale = Locale.current.identifier
-                        let carrier = CTCarrier()
-                        let mnc = carrier.mobileNetworkCode ?? "none"
-                        emailBody.append("Telegram: \(appVersion)\n")
-                        emailBody.append("OS: \(systemVersion)\n")
-                        emailBody.append("Locale: \(locale)\n")
-                        emailBody.append("MNC: \(mnc)")
-                        
-                        strongSelf.presentEmailComposeController(address: "sms@telegram.org", subject: strongSelf.presentationData.strings.Login_EmailCodeSubject(formattedNumber).string, body: emailBody, from: controller)
-                    } else {
-                        controller?.present(standardTextAlertController(theme: AlertControllerTheme(presentationData: strongSelf.presentationData), title: nil, text: strongSelf.presentationData.strings.Login_EmailNotConfiguredError, actions: [TextAlertAction(type: .defaultAction, title: strongSelf.presentationData.strings.Common_OK, action: {})]), in: .window(.root))
+                    if let controller {
+                        AuthorizationSequenceController.presentDidNotGetCodeUI(controller: controller, presentationData: strongSelf.presentationData, number: number)
                     }
                 } else {
                     controller?.inProgress = true
                     strongSelf.actionDisposable.set((resendAuthorizationCode(accountManager: strongSelf.sharedContext.accountManager, account: strongSelf.account, apiId: strongSelf.apiId, apiHash: strongSelf.apiHash, firebaseSecretStream: strongSelf.sharedContext.firebaseSecretStream)
-                    |> deliverOnMainQueue).start(next: { result in
+                    |> deliverOnMainQueue).startStrict(next: { result in
                         controller?.inProgress = false
                     }, error: { error in
                         if let strongSelf = self, let controller = controller {
@@ -622,7 +607,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
         controller.reset = { [weak self] in
             if let strongSelf = self {
                 let account = strongSelf.account
-                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: account.testingEnvironment, masterDatacenterId: account.masterDatacenterId, contents: .empty)).start()
+                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: account.testingEnvironment, masterDatacenterId: account.masterDatacenterId, contents: .empty)).startStandalone()
             }
         }
         controller.signInWithApple = { [weak self] in
@@ -674,7 +659,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                 }
                 let countryCode = AuthorizationSequenceController.defaultCountryCode()
                 
-                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).start()
+                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).startStandalone()
             })
         }
         controller.proceedWithEmail = { [weak self, weak controller] email in
@@ -687,7 +672,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
             strongSelf.currentEmail = email
             
             strongSelf.actionDisposable.set((sendLoginEmailCode(account: strongSelf.account, email: email)
-            |> deliverOnMainQueue).start(error: { error in
+            |> deliverOnMainQueue).startStrict(error: { error in
                 if let strongSelf = self, let controller = controller {
                     controller.inProgress = false
                     
@@ -747,7 +732,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
             
             if self.signInWithAppleSetup {
                 self.actionDisposable.set((verifyLoginEmailSetup(account: self.account, code: .appleToken(token))
-                |> deliverOnMainQueue).start(error: { [weak self, weak lastController] error in
+                |> deliverOnMainQueue).startStrict(error: { [weak self, weak lastController] error in
                     if let strongSelf = self, let lastController = lastController {
                         let text: String
                         switch error {
@@ -774,13 +759,13 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                             return nil
                         }
                         return (ApplicationSpecificNotice.forcedPasswordSetupKey(), entry)
-                    }).start(next: { [weak self] result in
+                    }).startStrict(next: { [weak self] result in
                         guard let strongSelf = self else {
                             return
                         }
                         switch result {
                             case let .signUp(data):
-                                let _ = beginSignUp(account: strongSelf.account, data: data).start()
+                                let _ = beginSignUp(account: strongSelf.account, data: data).startStandalone()
                             case .loggedIn:
                                 break
                         }
@@ -798,7 +783,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                                     case .codeExpired:
                                         text = strongSelf.presentationData.strings.Login_CodeExpired
                                         let account = strongSelf.account
-                                        let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: account.testingEnvironment, masterDatacenterId: account.masterDatacenterId, contents: .empty)).start()
+                                        let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: account.testingEnvironment, masterDatacenterId: account.masterDatacenterId, contents: .empty)).startStandalone()
                                     case .invalidEmailToken:
                                         text = strongSelf.presentationData.strings.Login_InvalidEmailTokenError
                                     case .invalidEmailAddress:
@@ -839,13 +824,13 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                 }
                 let countryCode = AuthorizationSequenceController.defaultCountryCode()
                 
-                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).start()
+                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).startStandalone()
             })
             controller.loginWithPassword = { [weak self, weak controller] password in
                 if let strongSelf = self {
                     controller?.inProgress = true
                     
-                    strongSelf.actionDisposable.set((authorizeWithPassword(accountManager: strongSelf.sharedContext.accountManager, account: strongSelf.account, password: password, syncContacts: syncContacts) |> deliverOnMainQueue).start(error: { error in
+                    strongSelf.actionDisposable.set((authorizeWithPassword(accountManager: strongSelf.sharedContext.accountManager, account: strongSelf.account, password: password, syncContacts: syncContacts) |> deliverOnMainQueue).startStrict(error: { error in
                         Queue.mainQueue().async {
                             if let strongSelf = self, let controller = controller {
                                 controller.inProgress = false
@@ -872,18 +857,18 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
             if let strongSelf = self, let strongController = controller {
                 strongController.inProgress = true
                 strongSelf.actionDisposable.set((TelegramEngineUnauthorized(account: strongSelf.account).auth.requestTwoStepVerificationPasswordRecoveryCode()
-                |> deliverOnMainQueue).start(next: { pattern in
+                |> deliverOnMainQueue).startStrict(next: { pattern in
                     if let strongSelf = self, let strongController = controller {
                         strongController.inProgress = false
 
                         let _ = (TelegramEngineUnauthorized(account: strongSelf.account).auth.state()
                         |> take(1)
-                        |> deliverOnMainQueue).start(next: { state in
+                        |> deliverOnMainQueue).startStandalone(next: { state in
                             guard let strongSelf = self else {
                                 return
                             }
                             if case let .unauthorized(state) = state, case let .passwordEntry(hint, number, code, _, syncContacts) = state.contents {
-                                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .passwordRecovery(hint: hint, number: number, code: code, emailPattern: pattern, syncContacts: syncContacts))).start()
+                                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .passwordRecovery(hint: hint, number: number, code: code, emailPattern: pattern, syncContacts: syncContacts))).startStandalone()
                             }
                         })
                     }
@@ -907,7 +892,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                         if let strongSelf = self, let strongController = controller {
                             strongController.inProgress = true
                             strongSelf.actionDisposable.set((performAccountReset(account: strongSelf.account)
-                            |> deliverOnMainQueue).start(next: {
+                            |> deliverOnMainQueue).startStrict(next: {
                                 if let strongController = controller {
                                     strongController.inProgress = false
                                 }
@@ -954,12 +939,12 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
 
             let _ = (TelegramEngineUnauthorized(account: strongSelf.account).auth.state()
             |> take(1)
-            |> deliverOnMainQueue).start(next: { state in
+            |> deliverOnMainQueue).startStandalone(next: { state in
                 guard let strongSelf = self else {
                     return
                 }
                 if case let .unauthorized(state) = state, case let .passwordRecovery(hint, number, code, _, syncContacts) = state.contents {
-                    let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .passwordEntry(hint: hint, number: number, code: code, suggestReset: true, syncContacts: syncContacts))).start()
+                    let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .passwordEntry(hint: hint, number: number, code: code, suggestReset: true, syncContacts: syncContacts))).startStandalone()
                 }
             })
         }
@@ -984,7 +969,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                 }
                 let countryCode = AuthorizationSequenceController.defaultCountryCode()
                 
-                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).start()
+                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).startStandalone()
             })
             controller.reset = { [weak self, weak controller] in
                 if let strongSelf = self, let strongController = controller {
@@ -994,7 +979,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                             if let strongSelf = self, let strongController = controller {
                                 strongController.inProgress = true
                                 strongSelf.actionDisposable.set((performAccountReset(account: strongSelf.account)
-                                    |> deliverOnMainQueue).start(next: {
+                                    |> deliverOnMainQueue).startStrict(next: {
                                         if let strongController = controller {
                                             strongController.inProgress = false
                                         }
@@ -1018,7 +1003,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
             controller.logout = { [weak self] in
                 if let strongSelf = self {
                     let account = strongSelf.account
-                    let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: account.testingEnvironment, masterDatacenterId: account.masterDatacenterId, contents: .empty)).start()
+                    let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: account.testingEnvironment, masterDatacenterId: account.masterDatacenterId, contents: .empty)).startStandalone()
                 }
             }
         }
@@ -1044,7 +1029,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                 }
                 let countryCode = AuthorizationSequenceController.defaultCountryCode()
                 
-                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).start()
+                let _ = TelegramEngineUnauthorized(account: strongSelf.account).auth.setState(state: UnauthorizedAccountState(isTestingEnvironment: strongSelf.account.testingEnvironment, masterDatacenterId: strongSelf.account.masterDatacenterId, contents: .phoneEntry(countryCode: countryCode, number: ""))).startStandalone()
             }, displayCancel: displayCancel)
             controller.signUpWithName = { [weak self, weak controller] firstName, lastName, avatarData, avatarAsset, avatarAdjustments in
                 if let strongSelf = self {
@@ -1061,7 +1046,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                         avatarVideo = Signal<TelegramMediaResource?, NoError> { subscriber in
                             let entityRenderer: LegacyPaintEntityRenderer? = avatarAdjustments.flatMap { adjustments in
                                 if let paintingData = adjustments.paintingData, paintingData.hasAnimation {
-                                    return LegacyPaintEntityRenderer(account: nil, adjustments: adjustments)
+                                    return LegacyPaintEntityRenderer(postbox: nil, adjustments: adjustments)
                                 } else {
                                     return nil
                                 }
@@ -1112,7 +1097,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
                         }
                         return (ApplicationSpecificNotice.forcedPasswordSetupKey(), entry)
                     })
-                    |> deliverOnMainQueue).start(error: { error in
+                    |> deliverOnMainQueue).startStrict(error: { error in
                         Queue.mainQueue().async {
                             if let strongSelf = self, let controller = controller {
                                 controller.inProgress = false
@@ -1250,22 +1235,27 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
         }
     }
     
-    private func presentEmailComposeController(address: String, subject: String, body: String, from controller: ViewController) {
+    private static func presentEmailComposeController(address: String, subject: String, body: String, from controller: ViewController, presentationData: PresentationData) {
         if MFMailComposeViewController.canSendMail() {
+            final class ComposeDelegate: NSObject, MFMailComposeViewControllerDelegate {
+                @objc func mailComposeController(_ controller: MFMailComposeViewController, didFinishWith result: MFMailComposeResult, error: Error?) {
+                    controller.dismiss(animated: true, completion: nil)
+                }
+            }
+        
             let composeController = MFMailComposeViewController()
             composeController.setToRecipients([address])
             composeController.setSubject(subject)
             composeController.setMessageBody(body, isHTML: false)
-            composeController.mailComposeDelegate = self
+            
+            let composeDelegate = ComposeDelegate()
+            objc_setAssociatedObject(composeDelegate, &ObjCKey_Delegate, composeDelegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+            composeController.mailComposeDelegate = composeDelegate
             
             controller.view.window?.rootViewController?.present(composeController, animated: true, completion: nil)
         } else {
-            controller.present(standardTextAlertController(theme: AlertControllerTheme(presentationData: self.presentationData), title: nil, text: self.presentationData.strings.Login_EmailNotConfiguredError, actions: [TextAlertAction(type: .defaultAction, title: self.presentationData.strings.Common_OK, action: {})]), in: .window(.root))
+            controller.present(standardTextAlertController(theme: AlertControllerTheme(presentationData: presentationData), title: nil, text: presentationData.strings.Login_EmailNotConfiguredError, actions: [TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_OK, action: {})]), in: .window(.root))
         }
-    }
-    
-    public func mailComposeController(_ controller: MFMailComposeViewController, didFinishWith result: MFMailComposeResult, error: Error?) {
-        controller.dismiss(animated: true, completion: nil)
     }
     
     private func animateIn() {
@@ -1302,7 +1292,7 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
     public static func defaultCountryCode() -> Int32 {
         var countryId: String? = nil
         let networkInfo = CTTelephonyNetworkInfo()
-        if let carrier = networkInfo.subscriberCellularProvider {
+        if let carrier = networkInfo.serviceSubscriberCellularProviders?.values.first {
             countryId = carrier.isoCountryCode
         }
         
@@ -1323,5 +1313,29 @@ public final class AuthorizationSequenceController: NavigationController, MFMail
         }
         
         return countryCode
+    }
+    
+    public static func presentDidNotGetCodeUI(controller: ViewController, presentationData: PresentationData, number: String) {
+        if MFMailComposeViewController.canSendMail() {
+            let formattedNumber = formatPhoneNumber(number)
+            
+            var emailBody = ""
+            emailBody.append(presentationData.strings.Login_EmailCodeBody(formattedNumber).string)
+            emailBody.append("\n\n")
+            
+            let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "unknown"
+            let systemVersion = UIDevice.current.systemVersion
+            let locale = Locale.current.identifier
+            let carrier = CTCarrier()
+            let mnc = carrier.mobileNetworkCode ?? "none"
+            emailBody.append("Telegram: \(appVersion)\n")
+            emailBody.append("OS: \(systemVersion)\n")
+            emailBody.append("Locale: \(locale)\n")
+            emailBody.append("MNC: \(mnc)")
+            
+            AuthorizationSequenceController.presentEmailComposeController(address: "sms@telegram.org", subject: presentationData.strings.Login_EmailCodeSubject(formattedNumber).string, body: emailBody, from: controller, presentationData: presentationData)
+        } else {
+            controller.present(standardTextAlertController(theme: AlertControllerTheme(presentationData: presentationData), title: nil, text: presentationData.strings.Login_EmailNotConfiguredError, actions: [TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_OK, action: {})]), in: .window(.root))
+        }
     }
 }

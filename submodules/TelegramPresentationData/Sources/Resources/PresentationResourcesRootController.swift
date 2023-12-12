@@ -101,7 +101,7 @@ public struct PresentationResourcesRootController {
 
     public static func navigationQrCodeIcon(_ theme: PresentationTheme) -> UIImage? {
         return theme.image(PresentationResourceKey.navigationQrCodeIcon.rawValue, { theme in
-            generateTintedImage(image: UIImage(bundleImageName: "Settings/QrIcon"), color: theme.rootController.navigationBar.accentTextColor)
+            generateTintedImage(image: UIImage(bundleImageName: "Settings/QrIcon"), color: .white)
         })
     }
     
@@ -167,6 +167,12 @@ public struct PresentationResourcesRootController {
                 context.setFillColor(theme.inAppNotification.fillColor.cgColor)
                 context.fillEllipse(in: CGRect(origin: CGPoint(x: inset, y: 8.0 * 2.0), size: CGSize(width: 30.0, height: 30.0)))
             })?.stretchableImage(withLeftCapWidth: Int(inset) + 15, topCapHeight: 8 * 2 + 15)
+        })
+    }
+    
+    public static func navigationPostStoryIcon(_ theme: PresentationTheme) -> UIImage? {
+        return theme.image(PresentationResourceKey.navigationPostStoryIcon.rawValue, { theme in
+            return generateTintedImage(image: UIImage(bundleImageName: "Chat List/AddStoryIcon"), color: .white)
         })
     }
 }

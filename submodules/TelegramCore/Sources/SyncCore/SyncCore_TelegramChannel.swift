@@ -166,6 +166,11 @@ public final class TelegramChannel: Peer, Equatable {
     public let bannedRights: TelegramChatBannedRights?
     public let defaultBannedRights: TelegramChatBannedRights?
     public let usernames: [TelegramPeerUsername]
+    public let storiesHidden: Bool?
+    public let nameColor: PeerNameColor?
+    public let backgroundEmojiId: Int64?
+    public let profileColor: PeerNameColor?
+    public let profileBackgroundEmojiId: Int64?
     
     public var indexName: PeerIndexNameRepresentation {
         var addressNames = self.usernames.map { $0.username }
@@ -175,14 +180,41 @@ public final class TelegramChannel: Peer, Equatable {
         return .title(title: self.title, addressNames: addressNames)
     }
     
-    public var associatedMediaIds: [MediaId]? { return nil }
+    public var associatedMediaIds: [MediaId]? {
+        if let backgroundEmojiId = self.backgroundEmojiId {
+            return [MediaId(namespace: Namespaces.Media.CloudFile, id: backgroundEmojiId)]
+        } else {
+            return nil
+        }
+    }
     
     public let associatedPeerId: PeerId? = nil
     public let notificationSettingsPeerId: PeerId? = nil
     
     public var timeoutAttribute: UInt32? { return nil }
     
-    public init(id: PeerId, accessHash: TelegramPeerAccessHash?, title: String, username: String?, photo: [TelegramMediaImageRepresentation], creationDate: Int32, version: Int32, participationStatus: TelegramChannelParticipationStatus, info: TelegramChannelInfo, flags: TelegramChannelFlags, restrictionInfo: PeerAccessRestrictionInfo?, adminRights: TelegramChatAdminRights?, bannedRights: TelegramChatBannedRights?, defaultBannedRights: TelegramChatBannedRights?, usernames: [TelegramPeerUsername]) {
+    public init(
+        id: PeerId,
+        accessHash: TelegramPeerAccessHash?,
+        title: String,
+        username: String?,
+        photo: [TelegramMediaImageRepresentation],
+        creationDate: Int32,
+        version: Int32,
+        participationStatus: TelegramChannelParticipationStatus,
+        info: TelegramChannelInfo,
+        flags: TelegramChannelFlags,
+        restrictionInfo: PeerAccessRestrictionInfo?,
+        adminRights: TelegramChatAdminRights?,
+        bannedRights: TelegramChatBannedRights?,
+        defaultBannedRights: TelegramChatBannedRights?,
+        usernames: [TelegramPeerUsername],
+        storiesHidden: Bool?,
+        nameColor: PeerNameColor?,
+        backgroundEmojiId: Int64?,
+        profileColor: PeerNameColor?,
+        profileBackgroundEmojiId: Int64?
+    ) {
         self.id = id
         self.accessHash = accessHash
         self.title = title
@@ -198,6 +230,11 @@ public final class TelegramChannel: Peer, Equatable {
         self.bannedRights = bannedRights
         self.defaultBannedRights = defaultBannedRights
         self.usernames = usernames
+        self.storiesHidden = storiesHidden
+        self.nameColor = nameColor
+        self.backgroundEmojiId = backgroundEmojiId
+        self.profileColor = profileColor
+        self.profileBackgroundEmojiId = profileBackgroundEmojiId
     }
     
     public init(decoder: PostboxDecoder) {
@@ -226,6 +263,11 @@ public final class TelegramChannel: Peer, Equatable {
         self.bannedRights = decoder.decodeObjectForKey("br", decoder: { TelegramChatBannedRights(decoder: $0) }) as? TelegramChatBannedRights
         self.defaultBannedRights = decoder.decodeObjectForKey("dbr", decoder: { TelegramChatBannedRights(decoder: $0) }) as? TelegramChatBannedRights
         self.usernames = decoder.decodeObjectArrayForKey("uns")
+        self.storiesHidden = decoder.decodeOptionalBoolForKey("sth")
+        self.nameColor = decoder.decodeOptionalInt32ForKey("nclr").flatMap { PeerNameColor(rawValue: $0) }
+        self.backgroundEmojiId = decoder.decodeOptionalInt64ForKey("bgem")
+        self.profileColor = decoder.decodeOptionalInt32ForKey("pclr").flatMap { PeerNameColor(rawValue: $0) }
+        self.profileBackgroundEmojiId = decoder.decodeOptionalInt64ForKey("pgem")
     }
     
     public func encode(_ encoder: PostboxEncoder) {
@@ -275,6 +317,36 @@ public final class TelegramChannel: Peer, Equatable {
             encoder.encodeNil(forKey: "dbr")
         }
         encoder.encodeObjectArray(self.usernames, forKey: "uns")
+        
+        if let storiesHidden = self.storiesHidden {
+            encoder.encodeBool(storiesHidden, forKey: "sth")
+        } else {
+            encoder.encodeNil(forKey: "sth")
+        }
+        
+        if let nameColor = self.nameColor {
+            encoder.encodeInt32(nameColor.rawValue, forKey: "nclr")
+        } else {
+            encoder.encodeNil(forKey: "nclr")
+        }
+        
+        if let backgroundEmojiId = self.backgroundEmojiId {
+            encoder.encodeInt64(backgroundEmojiId, forKey: "bgem")
+        } else {
+            encoder.encodeNil(forKey: "bgem")
+        }
+        
+        if let profileColor = self.profileColor {
+            encoder.encodeInt32(profileColor.rawValue, forKey: "pclr")
+        } else {
+            encoder.encodeNil(forKey: "pclr")
+        }
+        
+        if let profileBackgroundEmojiId = self.profileBackgroundEmojiId {
+            encoder.encodeInt64(profileBackgroundEmojiId, forKey: "pgem")
+        } else {
+            encoder.encodeNil(forKey: "pgem")
+        }
     }
     
     public func isEqual(_ other: Peer) -> Bool {
@@ -312,23 +384,58 @@ public final class TelegramChannel: Peer, Equatable {
         if lhs.usernames != rhs.usernames {
             return false
         }
-
+        if lhs.storiesHidden != rhs.storiesHidden {
+            return false
+        }
+        if lhs.nameColor != rhs.nameColor {
+            return false
+        }
+        if lhs.backgroundEmojiId != rhs.backgroundEmojiId {
+            return false
+        }
+        if lhs.profileColor != rhs.profileColor {
+            return false
+        }
+        if lhs.profileBackgroundEmojiId != rhs.profileBackgroundEmojiId {
+            return false
+        }
+        
         return true
     }
     
     public func withUpdatedAddressName(_ addressName: String?) -> TelegramChannel {
-        return TelegramChannel(id: self.id, accessHash: self.accessHash, title: self.title, username: addressName, photo: self.photo, creationDate: self.creationDate, version: self.version, participationStatus: self.participationStatus, info: self.info, flags: self.flags, restrictionInfo: self.restrictionInfo, adminRights: self.adminRights, bannedRights: self.bannedRights, defaultBannedRights: self.defaultBannedRights, usernames: self.usernames)
+        return TelegramChannel(id: self.id, accessHash: self.accessHash, title: self.title, username: addressName, photo: self.photo, creationDate: self.creationDate, version: self.version, participationStatus: self.participationStatus, info: self.info, flags: self.flags, restrictionInfo: self.restrictionInfo, adminRights: self.adminRights, bannedRights: self.bannedRights, defaultBannedRights: self.defaultBannedRights, usernames: self.usernames, storiesHidden: self.storiesHidden, nameColor: self.nameColor, backgroundEmojiId: self.backgroundEmojiId, profileColor: self.profileColor, profileBackgroundEmojiId: self.profileBackgroundEmojiId)
     }
     
     public func withUpdatedAddressNames(_ addressNames: [TelegramPeerUsername]) -> TelegramChannel {
-        return TelegramChannel(id: self.id, accessHash: self.accessHash, title: self.title, username: self.username, photo: self.photo, creationDate: self.creationDate, version: self.version, participationStatus: self.participationStatus, info: self.info, flags: self.flags, restrictionInfo: self.restrictionInfo, adminRights: self.adminRights, bannedRights: self.bannedRights, defaultBannedRights: self.defaultBannedRights, usernames: addressNames)
+        return TelegramChannel(id: self.id, accessHash: self.accessHash, title: self.title, username: self.username, photo: self.photo, creationDate: self.creationDate, version: self.version, participationStatus: self.participationStatus, info: self.info, flags: self.flags, restrictionInfo: self.restrictionInfo, adminRights: self.adminRights, bannedRights: self.bannedRights, defaultBannedRights: self.defaultBannedRights, usernames: addressNames, storiesHidden: self.storiesHidden, nameColor: self.nameColor, backgroundEmojiId: self.backgroundEmojiId, profileColor: self.profileColor, profileBackgroundEmojiId: self.profileBackgroundEmojiId)
     }
     
     public func withUpdatedDefaultBannedRights(_ defaultBannedRights: TelegramChatBannedRights?) -> TelegramChannel {
-        return TelegramChannel(id: self.id, accessHash: self.accessHash, title: self.title, username: self.username, photo: self.photo, creationDate: self.creationDate, version: self.version, participationStatus: self.participationStatus, info: self.info, flags: self.flags, restrictionInfo: self.restrictionInfo, adminRights: self.adminRights, bannedRights: self.bannedRights, defaultBannedRights: defaultBannedRights, usernames: self.usernames)
+        return TelegramChannel(id: self.id, accessHash: self.accessHash, title: self.title, username: self.username, photo: self.photo, creationDate: self.creationDate, version: self.version, participationStatus: self.participationStatus, info: self.info, flags: self.flags, restrictionInfo: self.restrictionInfo, adminRights: self.adminRights, bannedRights: self.bannedRights, defaultBannedRights: defaultBannedRights, usernames: self.usernames, storiesHidden: self.storiesHidden, nameColor: self.nameColor, backgroundEmojiId: self.backgroundEmojiId, profileColor: self.profileColor, profileBackgroundEmojiId: self.profileBackgroundEmojiId)
     }
     
     public func withUpdatedFlags(_ flags: TelegramChannelFlags) -> TelegramChannel {
-        return TelegramChannel(id: self.id, accessHash: self.accessHash, title: self.title, username: self.username, photo: self.photo, creationDate: self.creationDate, version: self.version, participationStatus: self.participationStatus, info: self.info, flags: flags, restrictionInfo: self.restrictionInfo, adminRights: self.adminRights, bannedRights: self.bannedRights, defaultBannedRights: self.defaultBannedRights, usernames: self.usernames)
+        return TelegramChannel(id: self.id, accessHash: self.accessHash, title: self.title, username: self.username, photo: self.photo, creationDate: self.creationDate, version: self.version, participationStatus: self.participationStatus, info: self.info, flags: flags, restrictionInfo: self.restrictionInfo, adminRights: self.adminRights, bannedRights: self.bannedRights, defaultBannedRights: self.defaultBannedRights, usernames: self.usernames, storiesHidden: self.storiesHidden, nameColor: self.nameColor, backgroundEmojiId: self.backgroundEmojiId, profileColor: self.profileColor, profileBackgroundEmojiId: self.profileBackgroundEmojiId)
+    }
+    
+    public func withUpdatedStoriesHidden(_ storiesHidden: Bool?) -> TelegramChannel {
+        return TelegramChannel(id: self.id, accessHash: self.accessHash, title: self.title, username: self.username, photo: self.photo, creationDate: self.creationDate, version: self.version, participationStatus: self.participationStatus, info: self.info, flags: self.flags, restrictionInfo: self.restrictionInfo, adminRights: self.adminRights, bannedRights: self.bannedRights, defaultBannedRights: self.defaultBannedRights, usernames: self.usernames, storiesHidden: storiesHidden, nameColor: self.nameColor, backgroundEmojiId: self.backgroundEmojiId, profileColor: self.profileColor, profileBackgroundEmojiId: self.profileBackgroundEmojiId)
+    }
+    
+    public func withUpdatedNameColor(_ nameColor: PeerNameColor?) -> TelegramChannel {
+        return TelegramChannel(id: self.id, accessHash: self.accessHash, title: self.title, username: self.username, photo: self.photo, creationDate: self.creationDate, version: self.version, participationStatus: self.participationStatus, info: self.info, flags: self.flags, restrictionInfo: self.restrictionInfo, adminRights: self.adminRights, bannedRights: self.bannedRights, defaultBannedRights: self.defaultBannedRights, usernames: self.usernames, storiesHidden: self.storiesHidden, nameColor: nameColor, backgroundEmojiId: self.backgroundEmojiId, profileColor: self.profileColor, profileBackgroundEmojiId: self.profileBackgroundEmojiId)
+    }
+    
+    public func withUpdatedBackgroundEmojiId(_ backgroundEmojiId: Int64?) -> TelegramChannel {
+        return TelegramChannel(id: self.id, accessHash: self.accessHash, title: self.title, username: self.username, photo: self.photo, creationDate: self.creationDate, version: self.version, participationStatus: self.participationStatus, info: self.info, flags: self.flags, restrictionInfo: self.restrictionInfo, adminRights: self.adminRights, bannedRights: self.bannedRights, defaultBannedRights: self.defaultBannedRights, usernames: self.usernames, storiesHidden: self.storiesHidden, nameColor: self.nameColor, backgroundEmojiId: backgroundEmojiId, profileColor: self.profileColor, profileBackgroundEmojiId: self.profileBackgroundEmojiId)
+    }
+    
+    public func withUpdatedProfileColor(_ profileColor: PeerNameColor?) -> TelegramChannel {
+        return TelegramChannel(id: self.id, accessHash: self.accessHash, title: self.title, username: self.username, photo: self.photo, creationDate: self.creationDate, version: self.version, participationStatus: self.participationStatus, info: self.info, flags: self.flags, restrictionInfo: self.restrictionInfo, adminRights: self.adminRights, bannedRights: self.bannedRights, defaultBannedRights: self.defaultBannedRights, usernames: self.usernames, storiesHidden: self.storiesHidden, nameColor: self.nameColor, backgroundEmojiId: self.backgroundEmojiId, profileColor: profileColor, profileBackgroundEmojiId: self.profileBackgroundEmojiId)
+    }
+    
+    public func withUpdatedProfileBackgroundEmojiId(_ profileBackgroundEmojiId: Int64?) -> TelegramChannel {
+        return TelegramChannel(id: self.id, accessHash: self.accessHash, title: self.title, username: self.username, photo: self.photo, creationDate: self.creationDate, version: self.version, participationStatus: self.participationStatus, info: self.info, flags: self.flags, restrictionInfo: self.restrictionInfo, adminRights: self.adminRights, bannedRights: self.bannedRights, defaultBannedRights: self.defaultBannedRights, usernames: self.usernames, storiesHidden: self.storiesHidden, nameColor: self.nameColor, backgroundEmojiId: self.backgroundEmojiId, profileColor: self.profileColor, profileBackgroundEmojiId: profileBackgroundEmojiId)
     }
 }

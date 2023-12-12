@@ -946,8 +946,6 @@ private final class MediaToolsScreenComponent: Component {
     }
 }
 
-private let storyDimensions = CGSize(width: 1080.0, height: 1920.0)
-
 public final class MediaToolsScreen: ViewController {
     fileprivate final class Node: ViewControllerTracingNode, UIGestureRecognizerDelegate {
         private weak var controller: MediaToolsScreen?
@@ -1005,12 +1003,7 @@ public final class MediaToolsScreen: ViewController {
             let isFirstTime = self.validLayout == nil
             self.validLayout = layout
             
-            let isTablet: Bool
-            if case .regular = layout.metrics.widthClass {
-                isTablet = true
-            } else {
-                isTablet = false
-            }
+            let isTablet = layout.metrics.isTablet
 
             let previewSize: CGSize
             let topInset: CGFloat = (layout.statusBarHeight ?? 0.0) + 5.0
